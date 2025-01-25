@@ -11,7 +11,7 @@ Note: the code has been tested with `Python3` on `Linux` and `Windows 10`.
 1. **Clone the Repository:**
 
    ```bash
-   git clone https://github.com/regek/facebook-marketplace-rss.git
+   git clone https://github.com/bethekind/facebook-marketplace-rss.git
    cd facebook-marketplace-rss
    ```
 
@@ -122,7 +122,7 @@ docker run --name fb-mp-rss -d \
   -v /path/to/config/directory:/app/config \
   -e CONFIG_FILE=/app/config/config.json \
   -p 5000:5000 \
-  regek/fb-mp-rss:latest
+  bethekind/fb-mp-rss:latest
 ```
 
 

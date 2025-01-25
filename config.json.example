@@ -1,0 +1,15 @@
+{
+    "server_ip": "0.0.0.0",
+    "server_port": "5000", 
+    "currency": "$",
+    "refresh_interval_minutes": 15,
+    "log_filename": "fb-rssfeed.log",
+    "base_url": "https://www.facebook.com/marketplace",
+    "locale": "your_locale",
+    "searches": {
+        "example_search_name": {
+            "level1": ["keyword1"],
+            "level2": ["keyword2"]
+        }
+    }
+} 

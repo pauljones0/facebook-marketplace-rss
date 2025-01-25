@@ -1,12 +1,29 @@
 #docker-compose up -d
+version: '3.8'
+
 services:
-  fb-mp-rss:
-    image: regek/fb-mp-rss:latest
-    container_name: fb-mp-rss
-    restart: always
-    environment:
-      CONFIG_FILE: /app/config/config.json
+  selenium:
+    image: selenium/standalone-firefox:4.15.0-20231127
+    shm_size: 2gb
+    ports:
+      - "4444:4444"
+      - "7900:7900"
+    networks:
+      - selenium-net
+
+  app:
+    build: .
+    volumes:
+      - ./config:/app/config
     ports:
       - "5000:5000"
-    volumes:
-      - ./:/app/config
+    environment:
+      - SELENIUM_REMOTE_URL=http://selenium:4444/wd/hub
+    depends_on:
+      - selenium
+    networks:
+      - selenium-net
+
+networks:
+  selenium-net:
+    driver: bridge

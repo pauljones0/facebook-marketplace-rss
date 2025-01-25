@@ -1,4 +1,19 @@
-
+# Config files
 config.json
+config.local.json
+
+# Database
 fb-rss-feed.db
-*.log
+
+# Logs
+*.log*
+output.html
+
+# Environment files
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class

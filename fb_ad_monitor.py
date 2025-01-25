@@ -1,3 +1,20 @@
+"""
+Facebook Marketplace RSS Feed Generator
+
+Provides real-time monitoring of Facebook Marketplace ads through RSS feeds.
+Handles ad filtering, database storage, and feed generation.
+
+Key Components:
+- Selenium-based web scraper
+- SQLite database for ad tracking
+- RSS feed generation endpoint
+- Background job scheduling
+- Configurable filtering system
+
+Entry Point:
+    main() -> None: Initializes and runs the monitor
+"""
+
 # Copyright (c) 2024, regek
 # All rights reserved.
 
@@ -28,6 +45,7 @@ from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from contextlib import contextmanager
 
 class fbRssAdMonitor:
     def __init__(self, json_file):
@@ -85,24 +103,26 @@ class fbRssAdMonitor:
 
     
     def init_selenium(self):
-        """
-        Initializes Selenium WebDriver with Firefox options.
-        """
+        """Initialize Selenium WebDriver with container support."""
         try:
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
-            firefox_options = FirefoxOptions()
-            firefox_options.add_argument("--no-sandbox")
-            firefox_options.add_argument("--disable-dev-shm-usage")
-            firefox_options.add_argument("--private")
-            firefox_options.add_argument("--headless")
-            firefox_options.set_preference("general.useragent.override", user_agent)
-            firefox_options.set_preference("dom.webdriver.enabled", False)  # Disable webdriver flag
-            firefox_options.set_preference("useAutomationExtension", False)  # Disable automation extension
-            firefox_options.set_preference("privacy.resistFingerprinting", True)  # Reduce fingerprinting
-        
-            gecko_driver_path = GeckoDriverManager().install()
-            self.driver = webdriver.Firefox(service=FirefoxService(gecko_driver_path), options=firefox_options)
+            remote_url = os.getenv('SELENIUM_REMOTE_URL')
             
+            if remote_url:
+                # Use containerized Selenium
+                options = webdriver.FirefoxOptions()
+                options.add_argument("--headless")
+                self.driver = webdriver.Remote(
+                    command_executor=remote_url,
+                    options=options
+                )
+            else:
+                # Local development setup
+                options = FirefoxOptions()
+                options.add_argument("-headless")
+                self.driver = webdriver.Firefox(
+                    service=FirefoxService(GeckoDriverManager().install()),
+                    options=options
+                )
         except Exception as e:
             self.logger.error(f"Error initializing Selenium: {e}")
             raise
@@ -131,7 +151,7 @@ class fbRssAdMonitor:
 
     def load_from_json(self, json_file):
         """
-        Loads config from a JSON file, where each URL has its own filters.
+        Loads config from a JSON file, where each search has its own filters.
 
         Args:
             json_file (str): Path to the JSON file.
@@ -144,22 +164,50 @@ class fbRssAdMonitor:
                 self.currency = data['currency']
                 self.refresh_interval_minutes = data['refresh_interval_minutes']
                 self.log_filename = data['log_filename']
-                self.url_filters = data.get('url_filters', {})
+                self.base_url = data['base_url']
+                self.locale = data.get('locale', None)  # Optional locale setting
+                
+                # Convert searches to url_filters format
+                self.url_filters = {}
+                for search_name, filters in data.get('searches', {}).items():
+                    # Start with base URL
+                    url = self.base_url
+                    
+                    # Add locale if specified
+                    if self.locale:
+                        url = f"{url}/{self.locale}"
+                    
+                    # Add search query unless it's the default search
+                    if search_name != "default":
+                        # Get the level1 keywords as they are the main search terms
+                        search_terms = filters.get('level1', [])
+                        if search_terms:
+                            # Join multiple terms with spaces and encode for URL
+                            search_query = ' '.join(search_terms)
+                            url = f"{url}/search?query={search_query}"
+                    
+                    self.url_filters[url] = filters
+                
                 self.urls_to_monitor = list(self.url_filters.keys())
+                self.logger.info(f"Loaded {len(self.urls_to_monitor)} URLs to monitor")
+                for url in self.urls_to_monitor:
+                    self.logger.debug(f"Monitoring URL: {url}")
         except Exception as e:
             self.logger.error(f"Error loading filters from JSON: {e}")
             raise
 
-    def apply_filters(self, url, title):
-        """
-        Applies keyword filters specific to the URL to the ad title.
-
+    def apply_filters(self, url: str, title: str) -> bool:
+        """Filter ads based on URL-specific rules.
+        
         Args:
-            url (str): The URL where the ad is found.
-            title (str): The title of the ad.
-
+            url: Marketplace URL where ad was found
+            title: Ad title text
+            
         Returns:
-            bool: True if the title matches all filters for the URL, False otherwise.
+            True if ad matches all filters
+            
+        Raises:
+            KeyError: If URL not in filters
         """
         filters = self.url_filters.get(url, {})
         if not filters:
@@ -272,60 +320,71 @@ class fbRssAdMonitor:
             self.logger.error(f"Database connection error: {e}")
             raise
 
+    def process_single_ad(self, cursor: sqlite3.Cursor, ad_details: tuple, seven_days_ago: datetime) -> None:
+        ad_id, title, price, ad_url = ad_details
+        
+        if not self._is_ad_recent(cursor, ad_id, seven_days_ago):
+            try:
+                new_item = self._create_rss_item(title, price, ad_url, ad_id)
+                self._save_ad_to_database(cursor, ad_url, ad_id, title, price)
+                self.rss_feed.items.insert(0, new_item)
+                self.logger.info(f"New ad detected: {title}")
+            except sqlite3.IntegrityError:
+                pass
+
+    def _is_ad_recent(self, cursor: sqlite3.Cursor, ad_id: str, seven_days_ago: datetime) -> bool:
+        cursor.execute('''
+            SELECT ad_id FROM ad_changes
+            WHERE ad_id = ? AND last_checked > ?
+        ''', (ad_id, seven_days_ago.isoformat()))
+        return cursor.fetchone() is not None
+
+    def _create_rss_item(self, title: str, price: str, ad_url: str, ad_id: str) -> PyRSS2Gen.RSSItem:
+        current_time = datetime.now(timezone.utc)
+        return PyRSS2Gen.RSSItem(
+            title=f"{title} - {price}",
+            link=ad_url,
+            description=f"Price: {price} - {title} at {current_time}",
+            guid=PyRSS2Gen.Guid(ad_id),
+            pubDate=self.local_time(current_time)
+        )
+
+    def _save_ad_to_database(self, cursor: sqlite3.Cursor, ad_url: str, ad_id: str, 
+                            title: str, price: str) -> None:
+        cursor.execute('''
+            INSERT INTO ad_changes (url, ad_id, title, price, last_checked) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (ad_url, ad_id, title, price, datetime.now(timezone.utc).isoformat()))
+
     def check_for_new_ads(self):
         """
         Checks for new ads on the monitored URLs and updates the RSS feed.
         """
         if not self.job_lock.acquire(blocking=False):
-            # Job is still running, skip this run
             self.logger.warning("Previous job still running, skipping this execution.")
             return
+
         self.logger.info("Fetching new Ads")
-        conn = None
         try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-            for url in self.urls_to_monitor:
-                self.init_selenium()
-                content = self.get_page_content(url)
-                if content is None:
-                    continue
-                ads = self.extract_ad_details(content, url)
-                for ad_id, title, price, ad_url in ads:
-                    cursor.execute('''
-                    SELECT ad_id FROM ad_changes
-                    WHERE ad_id = ? AND last_checked > ?
-                ''', (ad_id, seven_days_ago.isoformat()))
-                    row = cursor.fetchone()
-                    if row is None:
-                        # self.logger.info(f'New ad detected: {title}')
-                        new_item = PyRSS2Gen.RSSItem(
-                            title=f"{title} - {price}",
-                            link=ad_url,
-                            description=f"Price: {price} - {title} at {datetime.now(timezone.utc)}",
-                            guid=PyRSS2Gen.Guid(ad_id),
-                            pubDate=self.local_time(datetime.now(timezone.utc))
-                        )
-                        try:
-                            cursor.execute('INSERT INTO ad_changes (url, ad_id, title, price, last_checked) VALUES (?, ?, ?, ?, ?)',
-                                        (ad_url, ad_id, title, price, datetime.now(timezone.utc).isoformat()))
+            with get_db_connection(self.database) as conn:
+                cursor = conn.cursor()
+                seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+                
+                for url in self.urls_to_monitor:
+                    try:
+                        self.init_selenium()
+                        if content := self.get_page_content(url):
+                            ads = self.extract_ad_details(content, url)
+                            for ad_details in ads:
+                                self.process_single_ad(cursor, ad_details, seven_days_ago)
                             conn.commit()
-                            self.rss_feed.items.insert(0, new_item)
-                            self.logger.info(f"New ad detected: {title}")
-                        except sqlite3.IntegrityError as e:
-                            continue
-                self.driver.quit()
-                time.sleep(2)
-        except sqlite3.DatabaseError as e:
-            self.logger.error(f"Database error: {e}")
+                    finally:
+                        self.driver.quit()
+                        time.sleep(2)
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while checking for new ads: {e}")
         finally:
             self.job_lock.release()
-            self.driver.quit()
-            if conn:
-                conn.close()
 
     def generate_rss_feed(self):
         """

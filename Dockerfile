@@ -1,4 +1,4 @@
-# docker build -t regek/fb-mp-rss:latest .
+# docker build -t bethekind/fb-mp-rss:latest .
 
 # Use a slim Ubuntu image as the base
 FROM ubuntu:24.04
