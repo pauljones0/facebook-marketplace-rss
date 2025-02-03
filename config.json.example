@@ -3,7 +3,10 @@
     "server_port": "5000", 
     "currency": "$",
     "refresh_interval_minutes": 15,
+    "request_delay_seconds": 2,
     "log_filename": "fb-rssfeed.log",
+    "log_level": "INFO",
+    "debug": false,
     "base_url": "https://www.facebook.com/marketplace",
     "locale": "your_locale",
     "searches": {

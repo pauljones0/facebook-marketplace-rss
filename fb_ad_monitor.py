@@ -21,7 +21,7 @@ Entry Point:
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from flask import Flask, Response
+from flask import Flask, Response, redirect
 import sqlite3
 import hashlib
 import json
@@ -57,13 +57,25 @@ class fbRssAdMonitor:
         """
         self.urls_to_monitor = []
         self.url_filters = {}  # Dictionary to store filters per URL
-        self.database='fb-rss-feed.db'
+        self.database = 'fb-rss-feed.db'
         self.local_tz = tzlocal.get_localzone()
 
-        self.load_from_json(json_file)
-        self.set_logger()
+        # Set a default log filename before logging is configured.
+        self.log_filename = 'fb-rssfeed.log'
+        
+        self.set_logger()  # Configure logging early
+        self.load_from_json(json_file)  # This should load additional config, including log_level and debug
+        
+        # Create the Flask app and synchronize its logger level using the configured log_level.
         self.app = Flask(__name__)
+        self.app.logger.setLevel(getattr(logging, self.log_level.upper(), logging.INFO))
+        
+        # Use the configured debug flag for Flask
+        self.debug = getattr(self, 'debug', False)
+        
+        self.app.add_url_rule('/', 'home', self.home)
         self.app.add_url_rule('/rss', 'rss', self.rss)
+        
         self.rss_feed = PyRSS2Gen.RSS2(
             title="Facebook Marketplace Ad Feed",
             link="http://monitor.local/rss",
@@ -75,19 +87,30 @@ class fbRssAdMonitor:
     def set_logger(self):
         """
         Sets up logging configuration with both file and console streaming.
-        Log level is fetched from the environment variable LOG_LEVEL.
+        Uses the log_level provided in the configuration if available.
         """
         self.logger = logging.getLogger(__name__)
-        log_formatter = logging.Formatter('%(levelname)s:%(asctime)s:%(funcName)s:%(lineno)d::%(message)s', 
-                                          datefmt='%m/%d/%Y %I:%M:%S %p')
+        log_formatter = logging.Formatter(
+            '%(levelname)s:%(asctime)s:%(funcName)s:%(lineno)d::%(message)s',
+            datefmt='%m/%d/%Y %I:%M:%S %p'
+        )
 
-        # Get log level from environment variable, defaulting to INFO if not set
-        log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
-        log_level = logging.getLevelName(log_level_str)
+        if hasattr(self, 'log_level') and self.log_level:
+            log_level_str = self.log_level.upper()
+        else:
+            log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+
+        log_level = getattr(logging, log_level_str, logging.INFO)
 
         # File handler (rotating log)
-        file_handler = RotatingFileHandler(self.log_filename, mode='w', maxBytes=10*1024*1024, 
-                                           backupCount=2, encoding=None, delay=0)
+        file_handler = logging.handlers.RotatingFileHandler(
+            self.log_filename,
+            mode='w',
+            maxBytes=10 * 1024 * 1024,
+            backupCount=2,
+            encoding=None,
+            delay=0
+        )
         file_handler.setFormatter(log_formatter)
         file_handler.setLevel(log_level)
 
@@ -96,31 +119,29 @@ class fbRssAdMonitor:
         console_handler.setFormatter(log_formatter)
         console_handler.setLevel(log_level)
 
-        # Set the logger level and add handlers
         self.logger.setLevel(log_level)
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
-    
     def init_selenium(self):
-        """Initialize Selenium WebDriver with container support."""
+        """Initialize Selenium WebDriver with caching for the geckodriver binary."""
         try:
             remote_url = os.getenv('SELENIUM_REMOTE_URL')
+            options = FirefoxOptions()
+            options.add_argument("--headless")
             
             if remote_url:
-                # Use containerized Selenium
-                options = webdriver.FirefoxOptions()
-                options.add_argument("--headless")
+                # Use a remote Selenium instance (e.g., running in a Docker container)
                 self.driver = webdriver.Remote(
                     command_executor=remote_url,
                     options=options
                 )
             else:
-                # Local development setup
-                options = FirefoxOptions()
-                options.add_argument("-headless")
+                # For local development, use a cached geckodriver binary if available
+                if not hasattr(self, "gecko_path"):
+                    self.gecko_path = GeckoDriverManager().install()
                 self.driver = webdriver.Firefox(
-                    service=FirefoxService(GeckoDriverManager().install()),
+                    service=FirefoxService(self.gecko_path),
                     options=options
                 )
         except Exception as e:
@@ -129,7 +150,7 @@ class fbRssAdMonitor:
 
     def setup_scheduler(self):
         """
-        Setup background job to check new ads
+        Setup background job to check new ads immediately and at regular intervals.
         """
         self.job_lock = Lock()
         self.scheduler = BackgroundScheduler()
@@ -139,6 +160,7 @@ class fbRssAdMonitor:
                 'interval',
                 id=str(uuid.uuid4()),  # Unique ID for the job
                 minutes=self.refresh_interval_minutes,
+                next_run_time=datetime.now(),  # Run immediately upon scheduler start
                 misfire_grace_time=30,
                 coalesce=True
             )
@@ -163,9 +185,10 @@ class fbRssAdMonitor:
                 self.server_port = data['server_port']
                 self.currency = data['currency']
                 self.refresh_interval_minutes = data['refresh_interval_minutes']
-                self.log_filename = data['log_filename']
+                self.request_delay_seconds = data.get('request_delay_seconds')
                 self.base_url = data['base_url']
                 self.locale = data.get('locale', None)  # Optional locale setting
+                self.log_level = data.get('log_level', 'INFO')  # New field for log level
                 
                 # Convert searches to url_filters format
                 self.url_filters = {}
@@ -197,34 +220,22 @@ class fbRssAdMonitor:
             raise
 
     def apply_filters(self, url: str, title: str) -> bool:
-        """Filter ads based on URL-specific rules.
-        
-        Args:
-            url: Marketplace URL where ad was found
-            title: Ad title text
-            
-        Returns:
-            True if ad matches all filters
-            
-        Raises:
-            KeyError: If URL not in filters
-        """
+        self.logger.debug(f"Starting filter check for URL '{url}' with title: '{title}'")
         filters = self.url_filters.get(url, {})
         if not filters:
+            self.logger.debug("No filters defined for this URL. Allowing ad.")
             return True
 
-        try:
-            # Iterate through filter levels in order
-            level_keys = sorted(filters.keys(), key=lambda x: int(x.replace('level', '')))  # Sort levels numerically
-            # print (f"{title} - {level_keys}")
-            for level in level_keys:
-                keywords = filters.get(level, [])
-                # print (f"{title} - {level} - {keywords}")
-                if not any(keyword.lower() in title.lower() for keyword in keywords):
-                    return False  # If any level fails, return False
-        except Exception as e:
-            self.logger.error(f"An error while processing filters for {title}",e)
-            return False
+        level_keys = sorted(filters.keys(), key=lambda x: int(x.replace('level', '')))
+        for level in level_keys:
+            keywords = filters.get(level, [])
+            self.logger.debug(f"Filter {level} with keywords {keywords} for title: '{title}'")
+            result = any(keyword.lower() in title.lower() for keyword in keywords)
+            self.logger.debug(f"Result for {level}: {'passed' if result else 'failed'}")
+            if not result:
+                self.logger.debug(f"Ad rejected at {level} filter. Title: '{title}' does not contain any of {keywords}")
+                return False
+        self.logger.debug(f"All filters passed for title: '{title}'")
         return True
     
     def save_html(self, soup):
@@ -244,14 +255,16 @@ class fbRssAdMonitor:
             str: The HTML content of the page, or None if an error occurred.
         """
         try:
-            self.logger.info(f"Requesting {url}")
+            self.logger.info(f"Requesting Facebook Marketplace URL: {url}")
             self.driver.get(url)
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'div.x78zum5.xdt5ytf.x1iyjqo2.xd4ddsz'))
             )
-            return self.driver.page_source
+            content = self.driver.page_source
+            self.logger.info(f"Successfully fetched page content from {url}. Content length: {len(content)}")
+            return content
         except Exception as e:
-            self.logger.error(f"An error occurred while fetching page content: {e}")
+            self.logger.error(f"An error occurred while fetching page content from {url}: {e}")
             return None
 
     def get_ads_hash(self, content):
@@ -288,21 +301,23 @@ class fbRssAdMonitor:
                 full_url = f"https://facebook.com{href.split('?')[0]}"
                 title_span = ad_div.find('span', style=lambda value: value and '-webkit-line-clamp' in value)
                 price_span = ad_div.find('span', dir='auto', recursive=True)
-                # print(title_span)
-                # print(price_span)
                 if title_span and price_span:
-                    if price_span.get_text(strip=True).startswith(self.currency) or 'free' in price_span.get_text(strip=True).lower():
-                        title = title_span.get_text(strip=True) if title_span else 'No Title'
-                        price = price_span.get_text(strip=True) if price_span else 'No Price'
-
-                        if title != 'No Title' and price != 'No Price':
+                    title = title_span.get_text(strip=True)
+                    price = price_span.get_text(strip=True)
+                    # Only consider ads that have a price starting with the currency (or 'free')
+                    if (price.startswith(self.currency) or 'free' in price.lower()) and title != 'No Title' and price != 'No Price':
+                        self.logger.debug(f"Raw ad candidate found: title='{title}', price='{price}', url='{full_url}'")
+                        # Log filtering before and after
+                        if self.apply_filters(url, title):
                             span_id = self.get_ads_hash(full_url)
-                            if self.apply_filters(url, title):
-                                ads.append((span_id, title, price, full_url))
-            
+                            ads.append((span_id, title, price, full_url))
+                            self.logger.debug(f"Ad accepted after filtering: [{span_id}] {title} - {price}")
+                        else:
+                            self.logger.debug(f"Ad rejected after filtering: title='{title}', price='{price}', url='{full_url}'")
+            self.logger.debug(f"Total ads found for URL {url}: {len(ads)}. Ads: {ads}")
             return ads
         except Exception as e:
-            self.logger.error(f"An error occurred while extracting ad details: {e}")
+            self.logger.error(f"An error occurred while extracting ad details from URL {url}: {e}")
             return []
 
     def get_db_connection(self):
@@ -356,6 +371,26 @@ class fbRssAdMonitor:
             VALUES (?, ?, ?, ?, ?)
         ''', (ad_url, ad_id, title, price, datetime.now(timezone.utc).isoformat()))
 
+    def get_request_delay(self) -> float:
+        """
+        Determines the delay between URL requests.
+        Uses the manual override from the config if specified; otherwise,
+        calculates a delay based on the number of URLs.
+        
+        Returns:
+            float: Delay in seconds.
+        """
+        if hasattr(self, "request_delay_seconds") and self.request_delay_seconds is not None:
+            return self.request_delay_seconds
+        num_urls = len(self.urls_to_monitor)
+        if num_urls <= 5:
+            return 2.0
+        elif num_urls >= 10:
+            return 10.0
+        else:
+            # Linear interpolation between 2 and 10 seconds for 5-10 URLs:
+            return 2.0 + (num_urls - 5) * ((10.0 - 2.0) / 5.0)
+
     def check_for_new_ads(self):
         """
         Checks for new ads on the monitored URLs and updates the RSS feed.
@@ -364,26 +399,35 @@ class fbRssAdMonitor:
             self.logger.warning("Previous job still running, skipping this execution.")
             return
 
-        self.logger.info("Fetching new Ads")
+        self.logger.info("Starting new ads check job.")
         try:
-            with get_db_connection(self.database) as conn:
+            with self.get_db_connection() as conn:
                 cursor = conn.cursor()
                 seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-                
+                # Initialize the driver once for all URLs
+                self.init_selenium()
                 for url in self.urls_to_monitor:
+                    self.logger.info(f"Processing URL: {url}")
                     try:
-                        self.init_selenium()
-                        if content := self.get_page_content(url):
+                        content = self.get_page_content(url)
+                        if content:
                             ads = self.extract_ad_details(content, url)
+                            self.logger.info(f"URL {url} yielded {len(ads)} ads after filtering.")
                             for ad_details in ads:
                                 self.process_single_ad(cursor, ad_details, seven_days_ago)
                             conn.commit()
+                        else:
+                            self.logger.error(f"No content returned for {url}")
+                    except Exception as e:
+                        self.logger.error(f"Error processing URL {url}: {e}")
                     finally:
-                        self.driver.quit()
-                        time.sleep(2)
+                        delay = self.get_request_delay()
+                        time.sleep(delay)
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while checking for new ads: {e}")
         finally:
+            if hasattr(self, 'driver') and self.driver:
+                self.driver.quit()  # Close the Selenium driver
             self.job_lock.release()
 
     def generate_rss_feed(self):
@@ -432,19 +476,25 @@ class fbRssAdMonitor:
         self.generate_rss_feed()
         return Response(self.rss_feed.to_xml(encoding='utf-8'), mimetype='application/rss+xml')
 
-    def run(self, debug_opt=False):
+    def home(self):
+        """Redirect the home page to the /rss endpoint."""
+        return redirect('/rss')
+
+    def run(self):
         """
         Starts the Flask application and scheduler.
-
-        Args:
-            debug_opt (bool, optional): Debug mode option for Flask. Defaults to False.
         """
         try:
-            self.app.run(host=self.server_ip, port=self.server_port, debug=debug_opt)
+            self.app.run(
+                host=self.server_ip,
+                port=int(self.server_port),
+                debug=self.debug
+            )
         except (KeyboardInterrupt, SystemExit):
             self.scheduler.shutdown()
         finally:
-            self.driver.quit()  # Close the Selenium driver
+            if hasattr(self, 'driver') and self.driver:
+                self.driver.quit()
 
 if __name__ == "__main__":
     # Initialize and run the ad monitor

@@ -30,6 +30,9 @@ class Config:
     base_url: str
     locale: Optional[str]
     searches: Dict[str, SearchFilter]
+    request_delay_seconds: Optional[int] = None
+    log_level: Optional[str] = "INFO"
+    debug: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Config':
@@ -45,5 +48,8 @@ class Config:
             log_filename=data['log_filename'],
             base_url=data['base_url'],
             locale=data.get('locale'),
-            searches=searches
+            searches=searches,
+            request_delay_seconds=data.get('request_delay_seconds'),
+            log_level=data.get('log_level', 'INFO'),
+            debug=data.get('debug', False)
         ) 

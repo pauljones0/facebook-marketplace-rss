@@ -2,9 +2,22 @@
 
 ## Overview
 
-This project generates a RSS feed for Facebook Marketplace, allowing you to track new ads based on customizable filters.  
+This project generates an RSS feed for Facebook Marketplace so you can track new ads based on customizable filters. It is built with:
 
-Note: the code has been tested with `Python3` on `Linux` and `Windows 10`.
+- Selenium for web scraping
+- SQLite for ad tracking
+- RSS feed generation
+- Background job scheduling
+- A flexible, configuration-based filtering system
+
+*Tested using Python3 on Linux and Windows 10.*
+
+## Features
+
+- **Configurable Filters:** Define multi-level search keywords per URL.
+- **Automated Scheduling:** Checks for new ads at regular intervals.
+- **Rate Control:** Auto-adjusts the delay between URL requests based on the number of URLs (with an option for manual override).
+- **RSS Feed Generation:** Easily monitor new ads with your favorite RSS reader, such as [Feedly](https://feedly.com/), [Inoreader](https://inoreader.com/), [Tiny Tiny RSS](https://tt-rss.org/), or [FreshRSS](https://freshrss.org/).
 
 ## Installation
 
@@ -20,20 +33,32 @@ Note: the code has been tested with `Python3` on `Linux` and `Windows 10`.
    ```bash
    pip install -r requirements.txt
    ```
+
 3. **Install Firefox Browser:**
 
-    [Linux install](https://support.mozilla.org/en-US/kb/install-firefox-linux)  
-    [Windows install](https://support.mozilla.org/en-US/kb/how-install-firefox-windows)
+   - [Linux Installation](https://support.mozilla.org/en-US/kb/install-firefox-linux)
+   - [Windows Installation](https://support.mozilla.org/en-US/kb/how-install-firefox-windows)
 
 ## Configuration
 
-1. **Modify or Create `config.json`:**
+1. **Create/Modify your `config.json`:**
 
-   - Copy `config.json.example` to `config.json` and adjust the settings as needed.  
-   - At a minimum, you **must** modify the `currency` field.
-   - Some currency symbols. USA: `$`, Canada: `CA$`, Europe: `€`, UK: `£`, Australia: `A$` 
+   - Copy the example file:
+     
+     ```bash
+     cp config.json.example config.json
+     ```
 
-   Example `config.json`:
+   - Adjust the settings as needed.  
+     
+     **Note:**  
+     - You must modify at least the `currency` field (e.g., USA: `$`, Canada: `CA$`, Europe: `€`, UK: `£`, Australia: `A$`).
+     - The `locale` field is optional. When not specified, the system will use the `base_url` to determine the locale.
+     - The `request_delay_seconds` field is optional. If not specified, the system automatically calculates the delay between URL requests based on the number of URLs.
+     - **Logging Configuration:** Set the desired log level directly via the `log_level` parameter in your configuration file. Accepted values include `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`, and `"CRITICAL"`. If not set, the default log level is `"INFO"`.
+     - **Debug Mode:** Use the `"debug"` field to control whether Flask runs in debug mode (with auto-reloading and verbose error messages). This flag is independent of the `log_level`, so you could run with a high log verbosity without enabling Flask's debug mode.
+     
+2. **Example `config.json`:**
 
    ```json
    {
@@ -41,53 +66,23 @@ Note: the code has been tested with `Python3` on `Linux` and `Windows 10`.
        "server_port": "5000", // Port for the RSS server
        "currency": "$", // Currency used in your local marketplace
        "refresh_interval_minutes": 15, // Interval for checking new ads (recommened 15 interval minutes)
+       "request_delay_seconds": 2, // Optional: Manually set the delay between URL requests
        "log_filename": "fb-rssfeed.log",
-       "url_filters": {
-           "https://www.facebook.com/marketplace/page1": {
-               "level1": ["tv"],
-               "level2": ["smart"],
-               "level3": ["55\"", "55 inch"]
-           },
-           "https://www.facebook.com/marketplace/page2": {
-               "level1": ["dishwasher"],
-               "level2": ["kitchenaid", "samsung"]
-           },
-           "https://www.facebook.com/marketplace/page2": {}
+       "log_level": "INFO",
+       "debug": false,
+       "base_url": "https://www.facebook.com/marketplace",
+
+       "locale": "your_locale", // Specify your locale (e.g., "calgary")
+       "searches": {
+           "example_search_name": {
+               "level1": ["keyword1"], // First level of search keywords
+               "level2": ["keyword2"] // Second level of search keywords
+           }
        }
    }
    ```
 
-2. **Configuring URL Filters:**
-
-   - **Browse Facebook Marketplace:** Perform a search with your desired keywords.
-   - **Set Filters:** Apply search filters like sort order, price range, condition, etc.
-   - **Copy URL:** Use the entire URL after setting the filters.
-
-   The search function on Facebook Marketplace is incredibly frustrating. It often returns irrelevant results, even when you're searching for something specific. For instance, when you set the filter to "Date listed: Newest First," you might end up with spammy listings rather than relevant items. To improve the chances of finding what you're looking for, make sure to use the search filters.
-
-
-   - **Define Search Terms:** For each URL, specify search terms in levels.  
-     Keywords within a level are `OR` operations, and keywords between levels are `AND` operations.  
-     Only ad `title` is searched  
-
-     Example:
-     - **URL 1:** `https://www.facebook.com/marketplace/page1`
-       - **level1:** ["tv"]
-       - **level2:** ["smart"]
-       - **level3:** ["55\"", "55 inch"]
-
-     This configuration will match titles containing "tv" and "smart" and either "55\"" or "55 inch". e.g., TCL 55" smart tv, smart tv 55 inch LG
-
-     - **URL 2:** `https://www.facebook.com/marketplace/page2`
-       - **level1:** ["dishwasher"]
-       - **level2:** ["kitchenaid", "samsung"]
-
-     This will match titles containing "dishwasher" and either "kitchenaid" or "samsung". e.g., samsung dishwasher xyz, slightly used kicthenaid dishwasher
-
-     No custom filtering
-     - **URL 3:** `https://www.facebook.com/marketplace/page2`
-
-## Running the Application
+## Usage
 
 1. **Initialize the Database:**
 
@@ -101,22 +96,40 @@ Note: the code has been tested with `Python3` on `Linux` and `Windows 10`.
    python fb_ad_monitor.py
    ```
 
-## Accessing the RSS Feed
+3. **Access the RSS Feed:**
+   
+   - **Directly via `/rss`:**  
+     Visit `http://server_ip:server_port/rss` to view the RSS feed in XML format.
+     
+   - **Home Redirection:**  
+     Navigating to the base URL (i.e., `http://server_ip:server_port/`) will automatically redirect you to the `/rss` endpoint, providing a convenient entry point.
 
-- **Feed URL:** `http://server_ip:server_port/rss`
+4. **Logging & Debug Configuration:**
 
-   Replace `server_ip` and `server_port` with your configured values.
+   - **Log Level:**  
+     Set the desired log level in your `config.json` via the `log_level` parameter. This controls both Flask's and the application's logging verbosity.
+     
+   - **Debug Mode:**  
+     Control whether Flask runs in debug mode by setting the `"debug"` field in your configuration. This makes development easier when enabled, but it is recommended to set `"debug": false` in production.
 
-- **Feed Updates:** New ads are added to the feed only if they haven't been seen in the past week.
+## Best Practices for URL Monitoring
 
-- **RSS Reader:** Use any RSS feed reader to monitor updates. For example, you can use [Feedbro](https://nodetics.com/feedbro/).
+The system automatically calculates the delay between URL requests as follows (if no manual override is provided):
 
-## Set log level (optional)
-- set log level `export LOG_LEVEL=ERROR`
+| Number of URLs    | Auto-Calculated Delay  | Recommendation                                                                 |
+|-------------------|------------------------|--------------------------------------------------------------------------------|
+| 1-5 URLs          | 2 seconds              | Ideal for small lists; minimizes job runtime without overwhelming Facebook.  |
+| 6-10 URLs         | 2-10 seconds           | Delay is linearly interpolated between 2 and 10 seconds.                       |
+| **More than 10**  | **10 seconds**         | 10 seconds is the maximum default delay. If you monitor many URLs, consider setting `request_delay_seconds` manually for a better chance of avoiding throttling or IP bans. |
 
-## How to run in a Docker container
-- Provide `/path/to/config/directory`
-- Leave the `server_ip` and `server_port` as default
+**Note:**  
+- Using a longer delay on large URL lists improves the chance of avoiding throttling or IP bans.
+- You can override the auto-calculated delay by specifying the `request_delay_seconds` value in your configuration.
+
+## Docker Container
+
+To run the application in Docker, leave the `server_ip` and `server_port` fields as default and mount your configuration directory, then run:
+
 ```bash
 docker run --name fb-mp-rss -d \
   -v /path/to/config/directory:/app/config \
@@ -124,5 +137,43 @@ docker run --name fb-mp-rss -d \
   -p 5000:5000 \
   bethekind/fb-mp-rss:latest
 ```
+
+## Contributing
+
+1. **Fork and Clone the Repository.**
+2. **Create Your Config File:**
+
+   ```bash
+   cp config.json.example config.json
+   ```
+
+3. **Modify `config.json` with your settings.**
+4. **Initialize the Database:**
+
+   ```bash
+   python init_db.py
+   ```
+
+5. **Run the Application:**
+
+   ```bash
+   python fb_ad_monitor.py
+   ```
+
+6. **Create a new branch for your feature, update documentation as needed, and submit a pull request.**
+
+## CI/CD Process
+
+Our GitHub Actions workflow will:
+
+1. Run tests on every push to the main branch.
+2. Build and test the application.
+3. Build and push a Docker image if the tests pass.
+4. Deploy the image to Docker Hub.
+
+### Required Secrets
+
+- DOCKERHUB_USERNAME
+- DOCKERHUB_TOKEN
 
 
