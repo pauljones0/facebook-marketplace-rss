@@ -17,3 +17,7 @@ output.html
 __pycache__/
 *.py[cod]
 *$py.class
+
+#Testing temp files
+.hypothesis/
+.pytest_cache/

@@ -46,6 +46,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from contextlib import contextmanager
+from rate_limiter import RateLimiter, rate_limit  # Import the RateLimiter and decorator
 
 class fbRssAdMonitor:
     def __init__(self, json_file):
@@ -73,8 +74,12 @@ class fbRssAdMonitor:
         # Use the configured debug flag for Flask
         self.debug = getattr(self, 'debug', False)
         
-        self.app.add_url_rule('/', 'home', self.home)
-        self.app.add_url_rule('/rss', 'rss', self.rss)
+        # Set up the rate limiter instance. For example, allow 60 requests per minute per IP.
+        limiter = RateLimiter(requests_per_minute=60)
+
+        # Apply rate limiting to the routes by wrapping the view functions.
+        self.app.add_url_rule('/', 'home', rate_limit(limiter)(self.home))
+        self.app.add_url_rule('/rss', 'rss', rate_limit(limiter)(self.rss))
         
         self.rss_feed = PyRSS2Gen.RSS2(
             title="Facebook Marketplace Ad Feed",
@@ -85,43 +90,36 @@ class fbRssAdMonitor:
         )
 
     def set_logger(self):
+        """Configures the logger for the fbRssAdMonitor instance.
+        
+        This implementation wipes the existing log file at startup so that you 
+        only see logs from the current run.
         """
-        Sets up logging configuration with both file and console streaming.
-        Uses the log_level provided in the configuration if available.
-        """
-        self.logger = logging.getLogger(__name__)
-        log_formatter = logging.Formatter(
-            '%(levelname)s:%(asctime)s:%(funcName)s:%(lineno)d::%(message)s',
-            datefmt='%m/%d/%Y %I:%M:%S %p'
-        )
+        # Wipe out the current log file if it exists
+        if os.path.exists(self.log_filename):
+            with open(self.log_filename, "w"):
+                pass
 
-        if hasattr(self, 'log_level') and self.log_level:
-            log_level_str = self.log_level.upper()
-        else:
-            log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+        self.logger = logging.getLogger("fbRssAdMonitor")
+        
+        # Remove any existing handlers (in case of reinitialization)
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
 
-        log_level = getattr(logging, log_level_str, logging.INFO)
-
-        # File handler (rotating log)
-        file_handler = logging.handlers.RotatingFileHandler(
-            self.log_filename,
-            mode='w',
-            maxBytes=10 * 1024 * 1024,
-            backupCount=2,
-            encoding=None,
-            delay=0
-        )
-        file_handler.setFormatter(log_formatter)
-        file_handler.setLevel(log_level)
-
-        # Stream handler (console output)
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_formatter)
-        console_handler.setLevel(log_level)
-
+        # Set log level (using self.log_level if defined, default to INFO)
+        log_level = getattr(logging, self.log_level.upper(), logging.INFO) if hasattr(self, 'log_level') else logging.INFO
         self.logger.setLevel(log_level)
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
+
+        # Configure a RotatingFileHandler (appending is fine because we cleared the file already)
+        handler = RotatingFileHandler(
+            self.log_filename,
+            mode='a',                 # Append mode (file is already wiped)
+            maxBytes=5 * 1024 * 1024,   # 5 MB max per file (adjust as needed)
+            backupCount=5             # Keep up to 5 old log files
+        )
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
 
     def init_selenium(self):
         """Initialize Selenium WebDriver with caching for the geckodriver binary."""

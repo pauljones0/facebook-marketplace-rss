@@ -21,15 +21,15 @@ This project generates an RSS feed for Facebook Marketplace so you can track new
 
 ## Installation
 
-1. **Clone the Repository:**
+Follow these steps to get the project running:
 
+1. **Clone the Repository:**
    ```bash
    git clone https://github.com/bethekind/facebook-marketplace-rss.git
    cd facebook-marketplace-rss
    ```
 
-2. **Install Python Requirements:**
-
+2. **Install Python Dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
@@ -38,16 +38,12 @@ This project generates an RSS feed for Facebook Marketplace so you can track new
 
    - [Linux Installation](https://support.mozilla.org/en-US/kb/install-firefox-linux)
    - [Windows Installation](https://support.mozilla.org/en-US/kb/how-install-firefox-windows)
-
-## Configuration
-
-1. **Create/Modify your `config.json`:**
-
-   - Copy the example file:
-     
+4. **Configure the Application:**
+   - Create your configuration file by copying the example:
      ```bash
      cp config.json.example config.json
      ```
+   - Modify `config.json` as needed (e.g., set the `currency`, optionally set `locale` and `request_delay_seconds`, etc).
 
    - Adjust the settings as needed.  
      
@@ -58,7 +54,7 @@ This project generates an RSS feed for Facebook Marketplace so you can track new
      - **Logging Configuration:** Set the desired log level directly via the `log_level` parameter in your configuration file. Accepted values include `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`, and `"CRITICAL"`. If not set, the default log level is `"INFO"`.
      - **Debug Mode:** Use the `"debug"` field to control whether Flask runs in debug mode (with auto-reloading and verbose error messages). This flag is independent of the `log_level`, so you could run with a high log verbosity without enabling Flask's debug mode.
      
-2. **Example `config.json`:**
+   **Example `config.json`:**
 
    ```json
    {
@@ -90,8 +86,7 @@ This project generates an RSS feed for Facebook Marketplace so you can track new
    python init_db.py
    ```
 
-2. **Run the Server:**
-
+5. **Run the Application:**
    ```bash
    python fb_ad_monitor.py
    ```
@@ -128,7 +123,7 @@ The system automatically calculates the delay between URL requests as follows (i
 
 ## Docker Container
 
-To run the application in Docker, leave the `server_ip` and `server_port` fields as default and mount your configuration directory, then run:
+To run the application in Docker, leave the `server_ip` and `server_port` fields as default, mount your configuration directory, then run:
 
 ```bash
 docker run --name fb-mp-rss -d \
@@ -138,42 +133,30 @@ docker run --name fb-mp-rss -d \
   bethekind/fb-mp-rss:latest
 ```
 
-## Contributing
-
-1. **Fork and Clone the Repository.**
-2. **Create Your Config File:**
-
-   ```bash
-   cp config.json.example config.json
-   ```
-
-3. **Modify `config.json` with your settings.**
-4. **Initialize the Database:**
-
-   ```bash
-   python init_db.py
-   ```
-
-5. **Run the Application:**
-
-   ```bash
-   python fb_ad_monitor.py
-   ```
-
-6. **Create a new branch for your feature, update documentation as needed, and submit a pull request.**
-
 ## CI/CD Process
 
 Our GitHub Actions workflow will:
-
 1. Run tests on every push to the main branch.
 2. Build and test the application.
-3. Build and push a Docker image if the tests pass.
-4. Deploy the image to Docker Hub.
+3. Build and push a Docker image if tests pass.
+4. Deploy to Docker Hub.
 
 ### Required Secrets
+For the CI/CD pipeline to deploy to Docker Hub, you need to:
 
-- DOCKERHUB_USERNAME
-- DOCKERHUB_TOKEN
+1. Create a Docker Hub access token:
+   - Log in to Docker Hub
+   - Go to Account Settings > Security > New Access Token
+   - Create token with "Read, Write" permissions
+
+2. Add these secrets to your GitHub repository:
+   - Go to Repository Settings > Secrets > Actions
+   - Add these secrets:
+     - `DOCKERHUB_USERNAME`: Your Docker Hub username
+     - `DOCKERHUB_TOKEN`: The access token you created
+
+## Contributing
+
+Interested in helping improve the project? See our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing.
 
 

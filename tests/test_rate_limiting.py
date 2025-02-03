@@ -1,3 +1,5 @@
+from rate_limiter import RateLimiter
+
 def test_rate_limiting():
     limiter = RateLimiter(requests_per_minute=2)
     ip = "192.168.1.1"

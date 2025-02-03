@@ -1,7 +1,7 @@
 # docker build -t bethekind/fb-mp-rss:latest .
 
 # Use a slim Ubuntu image as the base
-FROM ubuntu:24.04
+FROM ubuntu:latest
 
 # Set environment variables to avoid interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
