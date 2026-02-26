@@ -16,6 +16,7 @@ pub struct AppState {
     pub config: RwLock<Config>,
     pub db: Database,
     pub start_time: std::time::Instant,
+    pub config_path: String,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
@@ -83,17 +84,34 @@ async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(new_config): Json<Config>,
 ) -> impl IntoResponse {
+    if let Err(e) = new_config.validate() {
+        tracing::error!("Invalid config: {}", e);
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({"detail": e.to_string()})),
+        )
+            .into_response();
+    }
+
     // Save to disk
-    if let Err(e) = new_config.save("config.json") {
+    if let Err(e) = new_config.save(&state.config_path) {
         tracing::error!("Failed to save config: {}", e);
-        return Json(json!({"status": "error", "message": e.to_string()}));
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"detail": format!("Failed to save config: {}", e)})),
+        )
+            .into_response();
     }
 
     // Update shared state
     let mut config = state.config.write().await;
     *config = new_config;
 
-    Json(json!({"status": "success"}))
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({"message": "Configuration saved successfully!"})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -118,6 +136,7 @@ mod tests {
             config: RwLock::new(config),
             db,
             start_time: std::time::Instant::now(),
+            config_path: "dummy_config.json".to_string(),
         })
     }
 
@@ -184,5 +203,63 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(ct.contains("rss+xml"), "Expected rss+xml, got: {}", ct);
+    }
+
+    #[tokio::test]
+    async fn test_update_config_valid_and_invalid() {
+        let state = make_state();
+        let app = app(state.clone());
+
+        let mut config = Config {
+            server_ip: "127.0.0.1".to_string(),
+            server_port: 5000,
+            currency: "$".to_string(),
+            refresh_interval_minutes: 15,
+            log_filename: "test.log".to_string(),
+            database_name: "test.db".to_string(),
+            url_filters: std::collections::HashMap::new(),
+        };
+
+        // Invalid config
+        config.server_port = 0;
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["detail"].is_string());
+
+        // Valid config
+        config.server_port = 8080;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["message"].is_string());
+        assert_eq!(state.config.read().await.server_port, 8080);
     }
 }

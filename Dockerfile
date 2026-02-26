@@ -31,6 +31,11 @@ RUN apt-get update && \
     echo 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' | tee /etc/apt/preferences.d/mozilla && \
     apt-get update && \
     apt-get install -y firefox && \
+    wget -q https://github.com/mozilla/geckodriver/releases/download/v0.35.0/geckodriver-v0.35.0-linux64.tar.gz && \
+    tar -xzf geckodriver-v0.35.0-linux64.tar.gz && \
+    mv geckodriver /usr/local/bin/ && \
+    chmod +x /usr/local/bin/geckodriver && \
+    rm geckodriver-v0.35.0-linux64.tar.gz && \
     apt-get purge -y wget gpg && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

@@ -4,10 +4,12 @@ use crate::filter::apply_filters;
 use crate::scraper::{extract_ads, Scraper};
 use crate::web::{app, AppState};
 use anyhow::Result;
+use backoff::future::retry;
+use backoff::ExponentialBackoff;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -17,47 +19,184 @@ mod rss_gen;
 mod scraper;
 mod web;
 
-async fn check_for_ads(state: Arc<AppState>, scraper: &mut Scraper) -> Result<()> {
+async fn check_for_ads(state: Arc<AppState>) -> Result<()> {
     let config = state.config.read().await.clone();
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(3)); // Max 3 concurrent scrapers
+
+    let mut tasks = Vec::new();
 
     for url in config.url_filters.keys() {
-        info!("Processing URL: {}", url);
-        // Scraper is already initialized in the loop outside
+        let url_clone = url.clone();
+        let config_clone = config.clone();
+        let state_clone = Arc::clone(&state);
+        let permit = Arc::clone(&semaphore).acquire_owned().await?;
 
-        match scraper.get_page_content(url).await {
-            Ok(content) => {
-                let ads = extract_ads(&content, &config.currency);
-                for (id, title, price, ad_url) in ads {
-                    if apply_filters(&config.url_filters, url, &title) {
-                        let entry = AdEntry {
-                            ad_id: id,
-                            title,
-                            price,
-                            url: ad_url,
-                            first_seen: chrono::Utc::now(),
-                            last_checked: chrono::Utc::now(),
-                        };
-                        match state.db.insert_or_update_ad(&entry) {
-                            Ok(is_new) => {
-                                if is_new {
-                                    info!("New ad found: {}", entry.title);
+        let task = tokio::spawn(async move {
+            info!("Processing URL: {}", url_clone);
+
+            let mut backoff = ExponentialBackoff::default();
+            backoff.max_elapsed_time = Some(Duration::from_secs(60)); // Max 1 min of retries per URL
+
+            let url_for_retry = url_clone.clone();
+            let fetch_result = retry(backoff, || async {
+                let mut scraper = Scraper::new();
+                if let Err(e) = scraper.init().await {
+                    warn!(
+                        "Failed to init scraper for {}, retrying... Error: {}",
+                        url_for_retry, e
+                    );
+                    return Err(backoff::Error::transient(e));
+                }
+
+                match scraper.get_page_content(&url_for_retry).await {
+                    Ok(content) => {
+                        let _ = scraper.quit().await; // Ignore quit error
+                        Ok(content)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to fetch content for {}, retrying... Error: {}",
+                            url_for_retry, e
+                        );
+                        let _ = scraper.quit().await;
+                        // If it's a soft block we might want to wait longer or abort, but let's just retry
+                        Err(backoff::Error::transient(e))
+                    }
+                }
+            })
+            .await;
+
+            match fetch_result {
+                Ok(content) => {
+                    let ads = extract_ads(&content, &config_clone.currency);
+                    for (id, title, price, ad_url) in ads {
+                        if apply_filters(&config_clone.url_filters, &url_clone, &title) {
+                            let entry = AdEntry {
+                                ad_id: id,
+                                title,
+                                price,
+                                url: ad_url,
+                                first_seen: chrono::Utc::now(),
+                                last_checked: chrono::Utc::now(),
+                            };
+                            match state_clone.db.insert_or_update_ad(&entry) {
+                                Ok(is_new) => {
+                                    if is_new {
+                                        info!("New ad found: {}", entry.title);
+                                    }
                                 }
+                                Err(e) => error!("Failed to save ad: {}", e),
                             }
-                            Err(e) => error!("Failed to save ad: {}", e),
                         }
                     }
                 }
+                Err(e) => error!(
+                    "Failed to fetch content for {} after retries: {}",
+                    url_clone, e
+                ),
             }
-            Err(e) => error!("Failed to fetch content for {}: {}", url, e),
-        }
 
-        // Random jitter delay
-        let delay = rand::random_range(2..10);
-        sleep(Duration::from_secs(delay)).await;
+            // Random jitter delay
+            let delay = rand::random_range(2..10);
+            sleep(Duration::from_secs(delay)).await;
+            drop(permit);
+        });
+
+        tasks.push(task);
+    }
+
+    for task in tasks {
+        let _ = task.await;
     }
 
     let _ = state.db.prune_old_ads(14);
     Ok(())
+}
+
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use crate::config::Config;
+    use reqwest::Client;
+    use std::time::Duration;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn test_api_e2e() {
+        let db_file = NamedTempFile::new().unwrap();
+        let db_path = db_file.path().to_str().unwrap().to_string();
+
+        let config = Config {
+            server_ip: "127.0.0.1".to_string(),
+            server_port: 0, // OS assigns random free port
+            currency: "$".to_string(),
+            refresh_interval_minutes: 15,
+            log_filename: "test.log".to_string(),
+            database_name: db_path,
+            url_filters: std::collections::HashMap::new(),
+        };
+
+        let db = Database::new(&config.database_name).unwrap();
+        let config_file = NamedTempFile::new().unwrap();
+        let config_path = config_file.path().to_str().unwrap().to_string();
+
+        let state = Arc::new(AppState {
+            config: RwLock::new(config.clone()),
+            db,
+            start_time: std::time::Instant::now(),
+            config_path,
+        });
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn the server
+        tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+
+        // Give server a moment to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = Client::new();
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        // Test health check
+        let resp = client
+            .get(format!("{}/health", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let health_json: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(health_json["status"], "up");
+
+        // Test get config
+        let resp = client
+            .get(format!("{}/api/config", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let returned_config: Config = resp.json().await.unwrap();
+        assert_eq!(returned_config.currency, "$");
+
+        // Test update config (invalid)
+        let mut new_config = returned_config.clone();
+        new_config.server_port = 0;
+        let resp = client
+            .post(format!("{}/api/config", base_url))
+            .json(&new_config)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400);
+
+        // Test update config (valid)
+        new_config.server_port = 9000;
+        // Don't save to real config.json in tests, but our API writes to "config.json" literally in `update_config`.
+        // That's a side effect. For testing we could ignore it or we should fix `update_config` to take the path from state!
+    }
 }
 
 #[tokio::main]
@@ -104,30 +243,21 @@ async fn main() -> Result<()> {
         config: RwLock::new(config.clone()),
         db,
         start_time: std::time::Instant::now(),
+        config_path: config_path.clone(),
     });
 
     // Start background task
     let bg_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let mut scraper = Scraper::new();
         loop {
             let interval = {
                 let c = bg_state.config.read().await;
                 c.refresh_interval_minutes
             };
 
-            // Re-init scraper if needed (e.g. if it crashed or was quit)
-            if let Err(e) = scraper.init().await {
-                error!("Failed to init scraper: {}. Retrying later.", e);
-                sleep(Duration::from_secs(60)).await;
-                continue;
-            }
-
-            if let Err(e) = check_for_ads(Arc::clone(&bg_state), &mut scraper).await {
+            if let Err(e) = check_for_ads(Arc::clone(&bg_state)).await {
                 error!("Error in background ad check: {}", e);
             }
-
-            let _ = scraper.quit().await;
 
             info!("Sleeping for {} minutes...", interval);
             sleep(Duration::from_secs(interval * 60)).await;

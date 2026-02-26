@@ -1,6 +1,6 @@
 use crate::db::AdEntry;
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use rss::{ChannelBuilder, Guid, ItemBuilder};
 
 pub fn generate_rss(entries: &[AdEntry], server_ip: &str, server_port: u16) -> Result<String> {
@@ -18,7 +18,7 @@ pub fn generate_rss(entries: &[AdEntry], server_ip: &str, server_port: u16) -> R
                 value: entry.ad_id.clone(),
                 permalink: false,
             }))
-            .pub_date(Some(entry.last_checked.to_rfc2822()))
+            .pub_date(Some(entry.last_checked.with_timezone(&Local).to_rfc2822()))
             .build();
         items.push(item);
     }
@@ -27,7 +27,7 @@ pub fn generate_rss(entries: &[AdEntry], server_ip: &str, server_port: u16) -> R
         .title("Facebook Marketplace Ad Feed")
         .link(format!("http://{}:{}/rss", server_ip, server_port))
         .description("An RSS feed to monitor new ads on Facebook Marketplace")
-        .last_build_date(Some(Utc::now().to_rfc2822()))
+        .last_build_date(Some(Utc::now().with_timezone(&Local).to_rfc2822()))
         .items(items)
         .build();
 

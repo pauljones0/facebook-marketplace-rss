@@ -3,6 +3,11 @@ use chrono::{DateTime, Duration, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
+mod migrations {
+    use refinery::embed_migrations;
+    embed_migrations!("migrations");
+}
+
 pub struct Database {
     pool: Pool<SqliteConnectionManager>,
 }
@@ -22,20 +27,16 @@ impl Database {
         let manager = SqliteConnectionManager::file(path);
         let pool = Pool::new(manager).map_err(|e| anyhow::anyhow!("Pool error: {}", e))?;
 
-        let conn = pool
+        let mut conn = pool
             .get()
             .map_err(|e| anyhow::anyhow!("Pool connection error: {}", e))?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS ad_changes (
-                url TEXT,
-                ad_id TEXT PRIMARY KEY,
-                title TEXT,
-                price TEXT,
-                first_seen TEXT,
-                last_checked TEXT
-            )",
-            [],
-        )?;
+
+        // Ensure WAL mode is set
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
+        // Run migrations
+        migrations::migrations::runner().run(&mut *conn)?;
+
         Ok(Database { pool })
     }
 

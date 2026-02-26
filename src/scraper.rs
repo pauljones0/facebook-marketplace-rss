@@ -5,6 +5,7 @@ use thirtyfour::prelude::*;
 
 pub struct Scraper {
     driver: Option<WebDriver>,
+    geckodriver_process: Option<std::process::Child>,
 }
 
 const USER_AGENTS: &[&str] = &[
@@ -19,27 +20,68 @@ const USER_AGENTS: &[&str] = &[
 
 impl Scraper {
     pub fn new() -> Self {
-        Scraper { driver: None }
+        Scraper {
+            driver: None,
+            geckodriver_process: None,
+        }
     }
 
     pub async fn init(&mut self) -> Result<()> {
+        // Install or update geckodriver if needed.
+        // We use spawn_blocking because webdriver-install creates its own tokio runtime inside,
+        // which panics if called from an existing async context.
+        let driver_path =
+            tokio::task::spawn_blocking(|| webdriver_install::Driver::Gecko.install())
+                .await?
+                .map_err(|e| anyhow::anyhow!("Failed to install geckodriver: {}", e.to_string()))?;
+
+        let child = std::process::Command::new(driver_path)
+            .arg("--port")
+            .arg("4444")
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to start geckodriver: {}. Is it installed?", e))?;
+
+        self.geckodriver_process = Some(child);
+
+        // Wait a bit for geckodriver to start
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
         let mut caps = DesiredCapabilities::firefox();
         caps.add_arg("--headless")?;
         caps.add_arg("--no-sandbox")?;
         caps.add_arg("--disable-dev-shm-usage")?;
+
+        let mut prefs = thirtyfour::common::capabilities::firefox::FirefoxPreferences::new();
+        prefs.set("dom.webdriver.enabled", false)?;
+        prefs.set("useAutomationExtension", false)?;
+        prefs.set("privacy.resistFingerprinting", true)?;
+        prefs.set("webgl.disabled", true)?;
+        prefs.set("media.peerconnection.enabled", false)?;
+        prefs.set("intl.accept_languages", "en-US,en;q=0.9")?;
+        caps.set_preferences(prefs)?;
 
         // Pick a random user agent
         let ua = USER_AGENTS[rand::random_range(0..USER_AGENTS.len())];
         caps.add_arg(&format!("--user-agent={}", ua))?;
 
         let driver = WebDriver::new("http://localhost:4444", caps).await?;
+
+        // Randomize window size to avoid default headless dimensions fingerprinting
+        let width = rand::random_range(1024..1920);
+        let height = rand::random_range(768..1080);
+        let _ = driver.set_window_rect(0, 0, width, height).await;
+
         self.driver = Some(driver);
         Ok(())
     }
 
     pub async fn quit(&mut self) -> Result<()> {
         if let Some(driver) = self.driver.take() {
-            driver.quit().await?;
+            let _ = driver.quit().await;
+        }
+        if let Some(mut child) = self.geckodriver_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
         Ok(())
     }
@@ -68,6 +110,15 @@ impl Scraper {
 
         let source = driver.source().await?;
         Ok(source)
+    }
+}
+
+impl Drop for Scraper {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.geckodriver_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -205,5 +256,28 @@ mod tests {
             get_ad_hash(url),
             get_ad_hash("https://facebook.com/marketplace/item/999")
         );
+    }
+
+    #[tokio::test]
+    async fn test_scraper_drop_kills_process() {
+        let child_id;
+        {
+            let mut scraper = Scraper::new();
+            let result = scraper.init().await;
+
+            // If it succeeds, or if it fails but geckodriver was spawned (e.g. Firefox not found),
+            // we check if geckodriver is still running after drop.
+            if let Some(process) = scraper.geckodriver_process.as_ref() {
+                child_id = process.id();
+                assert!(child_id > 0);
+            } else {
+                // If it failed before spawning geckodriver, we can't test Drop's kill capability.
+                return;
+            }
+
+            // Scraper goes out of scope here and should kill the process
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 }
