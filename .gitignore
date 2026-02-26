@@ -7,3 +7,4 @@ fb-rss-feed.db
 # Added by cargo
 
 /target
+dummy_config.json 

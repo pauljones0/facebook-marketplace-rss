@@ -20,6 +20,13 @@ The application uses Selenium (`thirtyfour`) with Firefox to browse and extract 
 *   **Docker Support:** Includes a [`Dockerfile`](Dockerfile:1) and [`docker-compose.yml`](docker-compose.yml:1) for easy containerized deployment.
 *   **Logging:** Comprehensive logging using `tracing` with configurable levels and output.
 
+## Documentation
+
+Additional project documentation, such as the technical design, requirements, and specifications, can be found in the `docs/` directory:
+*   [Design Document](docs/design.md)
+*   [Requirements](docs/requirements.md)
+*   [Specifications](docs/spec.md)
+
 ## Prerequisites
 
 ### Software & Tools

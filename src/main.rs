@@ -299,7 +299,12 @@ mod e2e_tests {
 
         // Test update config (valid)
         new_config.server_port = 9000;
-        // Don't save to real config.json in tests, but our API writes to "config.json" literally in `update_config`.
-        // That's a side effect. For testing we could ignore it or we should fix `update_config` to take the path from state!
+        let resp = client
+            .post(format!("{}/api/config", base_url))
+            .json(&new_config)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
     }
 }
