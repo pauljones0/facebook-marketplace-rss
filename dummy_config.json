@@ -1,0 +1,9 @@
+{
+  "server_ip": "127.0.0.1",
+  "server_port": 8080,
+  "currency": "$",
+  "refresh_interval_minutes": 15,
+  "log_filename": "test.log",
+  "database_name": "test.db",
+  "url_filters": {}
+}

@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use md5;
 use scraper::{Html, Selector};
 use thirtyfour::prelude::*;
 
@@ -33,7 +32,7 @@ impl Scraper {
         let driver_path =
             tokio::task::spawn_blocking(|| webdriver_install::Driver::Gecko.install())
                 .await?
-                .map_err(|e| anyhow::anyhow!("Failed to install geckodriver: {}", e.to_string()))?;
+                .map_err(|e| anyhow::anyhow!("Failed to install geckodriver: {}", e))?;
 
         let child = std::process::Command::new(driver_path)
             .arg("--port")
@@ -263,7 +262,7 @@ mod tests {
         let child_id;
         {
             let mut scraper = Scraper::new();
-            let result = scraper.init().await;
+            let _result = scraper.init().await;
 
             // If it succeeds, or if it fails but geckodriver was spawned (e.g. Firefox not found),
             // we check if geckodriver is still running after drop.
