@@ -2,9 +2,9 @@
 
 ## Overview
 
-Facebook Marketplace RSS Monitor is a Python application designed to scrape Facebook Marketplace search results, filter ads based on user-defined keywords, and generate an RSS feed for new listings. This allows users to stay updated on items of interest without manually checking the Marketplace.
+Facebook Marketplace RSS Monitor is a Rust application designed to scrape Facebook Marketplace search results, filter ads based on user-defined keywords, and generate an RSS feed for new listings. This allows users to stay updated on items of interest without manually checking the Marketplace.
 
-The application uses Selenium with Firefox to browse and extract ad data, Flask to serve the RSS feed and a web-based configuration editor, APScheduler to periodically check for new ads, and SQLite to store information about seen ads and prevent duplicates.
+The application uses Selenium (`thirtyfour`) with Firefox to browse and extract ad data, Axum to serve the RSS feed and a web-based configuration editor, Tokio for asynchronous scheduling and concurrency, and SQLite (`rusqlite`) to store information about seen ads and prevent duplicates.
 
 ## Key Features
 
@@ -18,29 +18,27 @@ The application uses Selenium with Firefox to browse and extract ad data, Flask 
 *   **Old Ad Pruning:** Automatically removes old ad entries from the database (default: ads not seen for 14 days).
 *   **Configurable:** Settings like server IP/port, currency, refresh interval, log file, and database name can be customized.
 *   **Docker Support:** Includes a [`Dockerfile`](Dockerfile:1) and [`docker-compose.yml`](docker-compose.yml:1) for easy containerized deployment.
-*   **Logging:** Comprehensive logging with configurable log levels and file output.
+*   **Logging:** Comprehensive logging using `tracing` with configurable levels and output.
 
 ## Prerequisites
 
 ### Software & Tools
-*   **Python 3:** (e.g., Python 3.10+; Docker image uses Python 3.12 from Ubuntu 24.04).
-*   **pip:** Python package installer.
-*   **Firefox Browser:** Required by Selenium for web scraping. The Docker image installs this automatically.
+*   **Rust Toolchain:** (e.g., Stable 1.81+).
+*   **Cargo:** Rust's package manager and build tool.
+*   **Firefox Browser:** Required by Selenium for web scraping.
+*   **GeckoDriver:** WebDriver for Firefox.
 *   **Docker & Docker Compose:** (Optional, for containerized deployment).
-*   **Git:** For cloning the repository.
 
-### Python Libraries
-The application relies on several Python libraries. For manual setup, these are typically listed in a `requirements.txt` file. Key libraries include:
-*   `Flask`
-*   `Selenium`
-*   `BeautifulSoup4` (bs4)
-*   `APScheduler`
-*   `PyRSS2Gen`
-*   `requests` (implicitly, via webdriver_manager)
-*   `python-dateutil`
-*   `tzlocal`
-*   `webdriver-manager`
-*   `waitress` (for production serving)
+### Rust Crates
+The application relies on several high-quality Rust crates:
+*   `axum` - Web server framework
+*   `tokio` - Asynchronous runtime
+*   `thirtyfour` - Selenium WebDriver client
+*   `rusqlite` - SQLite wrapper
+*   `rss` - RSS feed generation
+*   `scraper` - HTML parsing
+*   `serde` - Serialization/Deserialization
+*   `tracing` - Logging and instrumentation
 
 ## Installation
 
@@ -52,16 +50,12 @@ The application relies on several Python libraries. For manual setup, these are 
 
 ### Manual Setup
 
-1.  **Install Python and Pip:** Ensure Python 3 and pip are installed on your system.
-2.  **Install Firefox:** Download and install the latest version of Firefox browser.
-3.  **Install Python Dependencies:**
-    It's recommended to use a virtual environment:
+1.  **Install Rust:** Follow instructions at [rust-lang.org](https://www.rust-lang.org/tools/install).
+2.  **Install Firefox and GeckoDriver:** Ensure both are in your system's PATH.
+3.  **Build the Project:**
     ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    pip install -r requirements.txt # Ensure you have a requirements.txt file
+    cargo build --release
     ```
-    If `requirements.txt` is not available, you would need to install the libraries listed under "Python Libraries" manually (e.g., `pip install Flask selenium beautifulsoup4 ...`).
 
 ### Docker Setup
 
@@ -76,36 +70,12 @@ docker build -t bethekind/fb-mp-rss:latest .
 #### Running with Docker Compose (Recommended)
 This method uses the [`docker-compose.yml`](docker-compose.yml:1) file.
 1.  Ensure Docker and Docker Compose are installed.
-2.  Create a `config.json` file in the project root directory (you can copy and modify [`config.sample.json`](config.sample.json:1)). See the [Configuration](#configuration) section for details.
+2.  Create a `config.json` file in the project root directory (you can copy and modify [`config.sample.json`](config.sample.json:1)).
 3.  Run the application:
-    *   To run, potentially pulling the image `bethekind/fb-mp-rss:latest` from Docker Hub if available, or building locally if not:
-        ```bash
-        docker-compose up -d
-        ```
-    *   To force a local build and then run:
-        ```bash
-        docker-compose up -d --build
-        ```
-    The application will be accessible at `http://localhost:5000` (or your configured port). The `-d` flag runs it in detached mode.
-
-#### Pulling the Pre-built Image from Docker Hub
-If the image is available on Docker Hub, you can pull it directly:
-```bash
-docker pull bethekind/fb-mp-rss:latest
-```
-
-#### Running with `docker run` (Alternative)
-1.  Ensure you have a `config.json` file prepared on your host machine (e.g., at `/path/to/your/config.json`).
-2.  Run the container using the image (pulled from Docker Hub or built locally):
     ```bash
-    docker run --name fb-mp-rss-container -d \
-      -v /path/to/your/config.json:/app/config.json \
-      -e CONFIG_FILE=/app/config.json \
-      -e LOG_LEVEL=INFO \
-      -p 5000:5000 \
-      bethekind/fb-mp-rss:latest
+    docker-compose up -d
     ```
-    Adjust the port mapping (`-p host_port:container_port`) and volume path as needed.
+    The application will be accessible at `http://localhost:5000` (or your configured port).
 
 ## Configuration
 
@@ -136,74 +106,18 @@ Create `config.json` by copying and modifying [`config.sample.json`](config.samp
 
 ### Configuration Parameters
 
-*   `server_ip` (String): The IP address the web server will listen on. Default: `"0.0.0.0"` (listens on all available network interfaces).
+*   `server_ip` (String): The IP address the web server will listen on. Default: `"0.0.0.0"`.
 *   `server_port` (Integer): The port the web server will run on. Default: `5000`.
-*   `currency` (String): The currency symbol used in Facebook Marketplace for your region (e.g., "$", "€", "£"). This is used to help identify price elements. Default: `"$"`
-*   `refresh_interval_minutes` (Integer): How often (in minutes) the application should check for new ads. Default: `15`.
-*   `log_filename` (String): The name of the file where logs will be stored. Default in script: `"fb_monitor.log"`, sample config: `"fb-rssfeed.log"`.
+*   `currency` (String): The currency symbol (e.g., "$", "€"). Default: `"$"`
+*   `refresh_interval_minutes` (Integer): How often (in minutes) to check for new ads. Default: `15`.
+*   `log_filename` (String): The name of the log file. Default: `"fb_monitor.log"`.
 *   `database_name` (String): The name of the SQLite database file. Default: `"fb-rss-feed.db"`.
-*   `url_filters` (Object): A dictionary where each key is a Facebook Marketplace search URL you want to monitor.
-    *   The value for each URL is another dictionary defining keyword filter levels (e.g., `"level1"`, `"level2"`).
-    *   Each level (e.g., `"level1"`) contains a list of keywords (strings).
-        *   **Logic within a level:** Keywords are OR'd (e.g., `["keywordA", "keywordB"]` means match if title contains "keywordA" OR "keywordB").
-        *   **Logic between levels:** Levels are AND'd (e.g., `level1` AND `level2` must both be satisfied).
-    *   If a URL has an empty object `{}` as its filter value (e.g., `"https://...query=free%20stuff": {}`), all ads from that URL will be included without any keyword filtering on the title.
+*   `url_filters` (Object): A dictionary where each key is a Facebook Marketplace search URL and values are keyword level filters.
 
 ### Environment Variables
 
 *   `CONFIG_FILE`: Specifies the path to the `config.json` file.
-    *   In Docker Compose: Set to `/app/config.json` by default.
-    *   If not set, the script defaults to `config.json` in its current working directory.
-*   `LOG_LEVEL`: Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
-*   `PYTHONDONTWRITEBYTECODE=1`: (Set in [`Dockerfile`](Dockerfile:59)) Prevents Python from writing `.pyc` files.
-*   `PYTHONUNBUFFERED=1`: (Set in [`Dockerfile`](Dockerfile:60)) Forces Python stdout and stderr streams to be unbuffered, useful for Docker logging.
-*   `DEBIAN_FRONTEND=noninteractive`: (Set in [`Dockerfile`](Dockerfile:7)) Prevents interactive prompts during Docker image build.
-
-### Web-based Configuration Editor (`/edit`)
-
-The application provides a web interface for easier configuration management.
-
-*   **Access URL:** `http://<server_ip>:<server_port>/edit`
-    (e.g., `http://localhost:5000/edit` if running with default settings).
-*   **Functionality:**
-    *   View and modify all settings from `config.json`.
-    *   **Server Settings:** Edit Server IP, Server Port, Currency Symbol, and Refresh Interval (choose from presets or set a custom value).
-    *   **URL Filters:**
-        *   Add new Facebook Marketplace search URLs to monitor.
-        *   For each URL, define and manage multi-level keyword filters.
-        *   Add or remove filter levels (e.g., "Level 1", "Level 2").
-        *   Add or remove keywords within each level.
-*   **Saving Changes & Dynamic Reloading:**
-    *   When you save the configuration via the UI, the `config.json` file on the server is updated.
-    *   A backup of the previous configuration is created (e.g., `config.json.bak`).
-    *   The application attempts to dynamically reload the new settings:
-        *   **Dynamically Applied:** Changes to Currency, URL Filters, and Refresh Interval are typically applied without a full restart. The ad checking job will be rescheduled if the interval changes.
-        *   **Restart Required:** Changes to Server IP, Server Port, Log Filename, or Database Name will be saved to `config.json`, but a manual restart of the application is required for these specific changes to take full effect. The UI will provide a message indicating this.
-
-### Manual `config.json` Editing
-
-1.  **Create/Locate `config.json`:**
-    *   If it doesn't exist, copy [`config.sample.json`](config.sample.json:1) to `config.json` in the project's root directory.
-    *   Modify the values as needed, especially `currency` and `url_filters`.
-
-2.  **Configuring `url_filters` Manually:**
-    *   **Get Marketplace URL:**
-        1.  Go to Facebook Marketplace.
-        2.  Perform your desired search (e.g., "smart tv").
-        3.  Apply any necessary Facebook filters (location, sort order, price range, condition, etc.).
-        4.  Copy the complete URL from your browser's address bar. This will be a key in the `url_filters` object.
-    *   **Define Keyword Filters:**
-        For each URL, create an entry in `url_filters`. The value is an object where keys are `levelX` (e.g., `"level1"`, `"level2"`), and values are lists of keywords.
-        Example: To find 55-inch smart TVs:
-        ```json
-        "https://www.facebook.com/marketplace/category/search?query=smart%20tv&exact=false": {
-            "level1": ["tv", "television"],
-            "level2": ["smart", "google tv", "android tv"],
-            "level3": ["55\"", "55 inch"]
-        }
-        ```
-        This matches ads whose titles contain:
-        (`tv` OR `television`) AND (`smart` OR `google tv` OR `android tv`) AND (`55"` OR `55 inch`).
+*   `RUST_LOG`: Sets the logging verbosity (e.g., `info`, `debug`). Default is `info`.
 
 ## Running the Application
 
@@ -214,20 +128,14 @@ The application provides a web interface for easier configuration management.
     ```bash
     docker-compose up -d
     ```
-    To rebuild the image if you've made changes to the code or [`Dockerfile`](Dockerfile:1):
-    ```bash
-    docker-compose up -d --build
-    ```
 
 ### Manually
 
-1.  Ensure all prerequisites and dependencies from the [Manual Setup](#manual-setup) section are met.
-2.  Ensure `config.json` is configured in the project root.
-3.  Run the script:
+1.  Ensure all prerequisites are met.
+2.  Run the application:
     ```bash
-    python3 fb_ad_monitor.py
+    cargo run --release
     ```
-    The application will use `waitress` as the WSGI server if installed, otherwise, it falls back to Flask's development server (not recommended for production).
 
 ## Usage
 
@@ -290,18 +198,18 @@ Once the application is running:
 
 ## How It Works
 
-1.  **Configuration Loading:** Reads settings from `config.json`.
-2.  **Scheduler:** APScheduler runs a job at the configured `refresh_interval_minutes`.
+1.  **Configuration Loading:** Reads settings from `config.json` using `serde_json`.
+2.  **Scheduler:** A Tokio-spawned background loop runs periodic ad checks based on `refresh_interval_minutes`.
 3.  **Scraping:**
-    *   For each monitored URL, Selenium (with Firefox in headless mode) navigates to the page.
-    *   BeautifulSoup parses the HTML content.
-    *   Ad details (title, price, link) are extracted.
-4.  **Filtering:** Extracted ad titles are checked against the multi-level keyword filters defined for that source URL.
+    *   For each monitored URL, Selenium (`thirtyfour` with Firefox) navigates to the page.
+    *   The `scraper` crate parses the HTML content.
+    *   Ad details (title, price, link) are extracted using CSS selectors.
+4.  **Filtering:** Extracted ad titles are checked against multi-level keyword filters in `filter.rs`.
 5.  **Database Interaction:**
-    *   New, filtered ads are added to the SQLite database.
-    *   The `last_checked` timestamp for existing ads is updated.
-6.  **RSS Feed Generation:** The `/rss` endpoint queries the database for recent ads (typically last 7 days) and generates an RSS XML feed using PyRSS2Gen.
-7.  **Web Server:** Flask serves the RSS feed and the `/edit` configuration UI. Waitress is used as the production WSGI server.
+    *   Ads are stored in an SQLite database using `rusqlite` with `r2d2` connection pooling.
+    *   The `last_checked`, `title`, and `price` fields are updated for existing ads.
+6.  **RSS Feed Generation:** The `/rss` endpoint queries the database for recent ads and generates an RSS XML feed using the `rss` crate.
+7.  **Web Server:** Axum serves the RSS feed and the `/edit` configuration UI. tokio handles the asynchronous execution.
 
 ## License
 

@@ -2,3 +2,8 @@
 config.json
 fb-rss-feed.db
 *.log
+
+
+# Added by cargo
+
+/target

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import sqlite3
 import time
 import uuid
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import waitress
 import shutil # For config backup
 from urllib.parse import urlparse # For URL validation
+from contextlib import contextmanager
 
 import PyRSS2Gen
 import tzlocal
@@ -42,11 +44,20 @@ DEFAULT_LOG_LEVEL = 'INFO'
 CONFIG_FILE_ENV_VAR = 'CONFIG_FILE'
 DEFAULT_CONFIG_FILE = 'config.json'
 LOG_LEVEL_ENV_VAR = 'LOG_LEVEL'
-AD_DIV_SELECTOR = 'div.x78zum5.xdt5ytf.x1iyjqo2.xd4ddsz' # Selector for waiting
+AD_DIV_SELECTOR = "div[role='main'] div.x87ps6o" # More stable selector than dynamic classes
 AD_LINK_TAG = 'a'
 AD_TITLE_SELECTOR_STYLE = '-webkit-line-clamp' # Part of the style attribute for title span
 AD_PRICE_SELECTOR_DIR = 'auto' # dir attribute for price span
-SELENIUM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:130.0) Gecko/20100101 Firefox/130.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+]
 FACEBOOK_BASE_URL = "https://facebook.com"
 
 
@@ -180,7 +191,9 @@ class fbRssAdMonitor:
             firefox_options.add_argument("--disable-dev-shm-usage")
             firefox_options.add_argument("--private")
             firefox_options.add_argument("--headless")
-            firefox_options.set_preference("general.useragent.override", SELENIUM_USER_AGENT)
+            user_agent = random.choice(USER_AGENTS)
+            firefox_options.set_preference("general.useragent.override", user_agent)
+            self.logger.debug(f"Using User-Agent: {user_agent}")
             firefox_options.set_preference("dom.webdriver.enabled", False)
             firefox_options.set_preference("useAutomationExtension", False)
             firefox_options.set_preference("privacy.resistFingerprinting", True)
@@ -429,6 +442,12 @@ class fbRssAdMonitor:
         try:
             self.logger.info(f"Requesting URL: {url}")
             self.driver.get(url)
+            # Soft block detection: Check if we're redirected to a login page
+            current_url = self.driver.current_url.lower()
+            if "login" in current_url or "checkpoint" in current_url:
+                self.logger.warning(f"Potential soft block detected! Redirected to: {current_url}")
+                return None
+
             # Wait for a container element that typically holds the ads
             WebDriverWait(self.driver, 20).until( # Increased wait time
                 EC.presence_of_element_located((By.CSS_SELECTOR, AD_DIV_SELECTOR))
@@ -535,26 +554,24 @@ class fbRssAdMonitor:
             return []
 
 
-    def get_db_connection(self) -> Optional[sqlite3.Connection]:
+    @contextmanager
+    def get_db_connection(self):
         """
-        Establishes a connection to the SQLite database.
-
-        Returns:
-            Optional[sqlite3.Connection]: The database connection object, or None on error.
+        Context manager for SQLite database connections.
+        Ensures the connection is closed after use.
         """
+        conn = None
         try:
-            conn = sqlite3.connect(self.database, timeout=10) # Add timeout
+            conn = sqlite3.connect(self.database, timeout=10)
             conn.row_factory = sqlite3.Row
-            # Optional: Enable WAL mode for better concurrency
-            # try:
-            #      conn.execute("PRAGMA journal_mode=WAL;")
-            # except sqlite3.Error as e:
-            #      self.logger.warning(f"Could not enable WAL mode for database: {e}")
-            self.logger.debug(f"Database connection established to {self.database}")
-            return conn
+            yield conn
         except sqlite3.Error as e:
             self.logger.error(f"Database connection error to {self.database}: {e}")
-            return None
+            raise
+        finally:
+            if conn:
+                conn.close()
+                self.logger.debug("Database connection closed.")
 
 
     def check_for_new_ads(self) -> None:
@@ -567,118 +584,87 @@ class fbRssAdMonitor:
             return
 
         self.logger.info("Starting scheduled check for new ads...")
-        conn = None
         new_ads_added_count = 0
         processed_urls_count = 0
 
         try:
-            conn = self.get_db_connection()
-            if not conn:
-                self.logger.error("Failed to get database connection. Aborting ad check.")
-                return # Cannot proceed without DB
+            with self.get_db_connection() as conn:
+                cursor = conn.cursor()
+                added_ad_ids_this_run = set()
 
-            cursor = conn.cursor()
-            # Keep track of ads added in this run to avoid duplicates if multiple URLs list the same ad
-            added_ad_ids_this_run = set()
+                for url in self.urls_to_monitor:
+                    processed_urls_count += 1
+                    self.logger.info(f"Processing URL ({processed_urls_count}/{len(self.urls_to_monitor)}): {url}")
+                    try:
+                        self.init_selenium()
+                        if not self.driver:
+                             self.logger.warning(f"Skipping URL {url} due to Selenium initialization failure.")
+                             continue
 
-            for url in self.urls_to_monitor:
-                processed_urls_count += 1
-                self.logger.info(f"Processing URL ({processed_urls_count}/{len(self.urls_to_monitor)}): {url}")
-                try:
-                    self.init_selenium() # Initialize driver for this URL
-                    if not self.driver:
-                         self.logger.warning(f"Skipping URL {url} due to Selenium initialization failure.")
-                         continue # Skip to next URL if driver init failed
+                        content = self.get_page_content(url)
+                        self.quit_selenium()
 
-                    content = self.get_page_content(url)
-                    self.quit_selenium() # Quit driver after fetching content for this URL
+                        if content is None:
+                            self.logger.warning(f"No content received for URL: {url}. Skipping.")
+                            continue
 
-                    if content is None:
-                        self.logger.warning(f"No content received for URL: {url}. Skipping.")
-                        continue
+                        ads = self.extract_ad_details(content, url)
+                        if not ads:
+                             self.logger.info(f"No matching ads found for URL: {url}.")
+                             continue
 
-                    ads = self.extract_ad_details(content, url)
-                    if not ads:
-                         self.logger.info(f"No matching ads found or extracted for URL: {url}.")
-                         continue
+                        for ad_id, title, price, ad_url in ads:
+                            if ad_id in added_ad_ids_this_run:
+                                 continue
 
+                            cursor.execute('SELECT ad_id FROM ad_changes WHERE ad_id = ?', (ad_id,))
+                            existing_ad = cursor.fetchone()
+                            now_utc = datetime.now(timezone.utc)
+                            now_iso = now_utc.isoformat()
 
-                    for ad_id, title, price, ad_url in ads:
-                        if ad_id in added_ad_ids_this_run:
-                             self.logger.debug(f"Ad '{title}' ({ad_id}) already processed in this run. Skipping.")
-                             continue # Avoid processing the same ad multiple times if found via different source URLs
-
-                        # Check if ad exists in DB (more robust check than just recent)
-                        cursor.execute('SELECT ad_id FROM ad_changes WHERE ad_id = ?', (ad_id,))
-                        existing_ad = cursor.fetchone()
-                        now_utc = datetime.now(timezone.utc)
-                        now_iso = now_utc.isoformat()
-
-                        if existing_ad is None:
-                            # Ad is completely new
-                            self.logger.info(f"New ad detected: '{title}' ({price}) - {ad_url}")
-                            new_item = PyRSS2Gen.RSSItem(
-                                title=f"{title} - {price}",
-                                link=ad_url,
-                                description=f"Price: {price} | Title: {title}", # Simpler description
-                                guid=PyRSS2Gen.Guid(ad_id, isPermaLink=False), # Use ad_id hash as GUID
-                                pubDate=self.local_time(now_utc) # Use local time for pubDate
-                            )
-                            try:
-                                cursor.execute(
-                                    'INSERT INTO ad_changes (url, ad_id, title, price, first_seen, last_checked) VALUES (?, ?, ?, ?, ?, ?)',
-                                    (ad_url, ad_id, title, price, now_iso, now_iso)
+                            if existing_ad is None:
+                                self.logger.info(f"New ad: '{title}' ({price}) - {ad_url}")
+                                new_item = PyRSS2Gen.RSSItem(
+                                    title=f"{title} - {price}",
+                                    link=ad_url,
+                                    description=f"Price: {price} | Title: {title}",
+                                    guid=PyRSS2Gen.Guid(ad_id, isPermaLink=False),
+                                    pubDate=self.local_time(now_utc)
                                 )
-                                conn.commit()
-                                # Prepend to the live RSS feed object
-                                self.rss_feed.items.insert(0, new_item)
-                                added_ad_ids_this_run.add(ad_id)
-                                new_ads_added_count += 1
-                                self.logger.debug(f"Successfully added new ad '{title}' to DB and RSS feed.")
-                            except sqlite3.IntegrityError:
-                                self.logger.warning(f"IntegrityError inserting ad '{title}' ({ad_id}). Might be a race condition. Updating last_checked.")
-                                # If insert fails due to constraint (e.g., ad added between SELECT and INSERT), update last_checked
-                                cursor.execute('UPDATE ad_changes SET last_checked = ? WHERE ad_id = ?',
-                                               (now_iso, ad_id))
-                                conn.commit()
-                            except sqlite3.Error as db_err:
-                                 self.logger.error(f"Database error processing ad '{title}' ({ad_id}): {db_err}")
-                                 conn.rollback() # Rollback on error for this specific ad
+                                try:
+                                    cursor.execute(
+                                        'INSERT INTO ad_changes (url, ad_id, title, price, first_seen, last_checked) VALUES (?, ?, ?, ?, ?, ?)',
+                                        (ad_url, ad_id, title, price, now_iso, now_iso)
+                                    )
+                                    conn.commit()
+                                    self.rss_feed.items.insert(0, new_item)
+                                    added_ad_ids_this_run.add(ad_id)
+                                    new_ads_added_count += 1
+                                except sqlite3.IntegrityError:
+                                    conn.rollback()
+                                    cursor.execute('UPDATE ad_changes SET last_checked = ? WHERE ad_id = ?', (now_iso, ad_id))
+                                    conn.commit()
+                                except Exception as e:
+                                    self.logger.error(f"Error saving ad: {e}")
+                                    conn.rollback()
+                            else:
+                                 cursor.execute('UPDATE ad_changes SET last_checked = ? WHERE ad_id = ?', (now_iso, ad_id))
+                                 conn.commit()
 
-                        else:
-                             # Ad exists, update last_checked timestamp
-                             self.logger.debug(f"Existing ad found: '{title}' ({ad_id}). Updating last_checked.")
-                             cursor.execute('UPDATE ad_changes SET last_checked = ? WHERE ad_id = ?',
-                                            (now_iso, ad_id))
-                             conn.commit()
+                    except Exception as url_proc_err:
+                         self.logger.exception(f"Error processing URL {url}: {url_proc_err}")
+                         self.quit_selenium()
+                    finally:
+                         delay = random.uniform(2, 7)
+                         time.sleep(delay)
 
+                self.prune_old_ads(conn)
+                self.logger.info(f"Finished check. Added {new_ads_added_count} new ads.")
 
-                except Exception as url_proc_err:
-                     self.logger.exception(f"Error processing URL {url}: {url_proc_err}")
-                     # Ensure driver is quit even if processing fails mid-way for a URL
-                     self.quit_selenium()
-                finally:
-                     # Short delay between processing URLs
-                     time.sleep(2)
-
-
-            # --- Optional: Prune old ads from DB ---
-            self.prune_old_ads(conn)
-
-            self.logger.info(f"Finished ad check. Added {new_ads_added_count} new ads.")
-
-        except sqlite3.DatabaseError as e:
-            self.logger.error(f"Database error during ad check: {e}")
-            if conn:
-                 conn.rollback() # Rollback any potential partial changes
         except Exception as e:
-            self.logger.exception(f"Unexpected error during ad check: {e}") # Use exception for stack trace
+            self.logger.exception(f"Unexpected error during ad check: {e}")
         finally:
-            # Ensure driver is quit if the loop finished or broke unexpectedly
             self.quit_selenium()
-            if conn:
-                conn.close()
-                self.logger.debug("Database connection closed.")
             self.job_lock.release()
             self.logger.debug("Ad check job lock released.")
 
@@ -702,72 +688,37 @@ class fbRssAdMonitor:
 
 
     def generate_rss_feed_from_db(self) -> None:
-        """
-        Generates the RSS feed items list from recent ad changes in the database.
-        This replaces the current items in self.rss_feed.items.
-        """
-        self.logger.debug("Generating RSS feed items from database...")
-        conn = None
-        new_items: List[PyRSS2Gen.RSSItem] = []
+        """Generates RSS feed from DB using context manager."""
         try:
-            conn = self.get_db_connection()
-            if not conn:
-                 self.logger.error("Cannot generate RSS feed from DB: No database connection.")
-                 # Keep existing items if DB fails
-                 return
+            with self.get_db_connection() as conn:
+                cursor = conn.cursor()
+                relevant_period_start = datetime.now(timezone.utc) - timedelta(days=7)
+                cursor.execute('''
+                    SELECT ad_id, title, price, url, last_checked
+                    FROM ad_changes
+                    WHERE last_checked >= ?
+                    ORDER BY last_checked DESC LIMIT 100
+                ''', (relevant_period_start.isoformat(),))
+                
+                new_items = []
+                for change in cursor.fetchall():
+                    try:
+                        pub_date = self.local_time(parser.isoparse(change['last_checked']))
+                        new_items.append(PyRSS2Gen.RSSItem(
+                            title=f"{change['title']} - {change['price']}",
+                            link=change['url'],
+                            description=f"Price: {change['price']} | Title: {change['title']}",
+                            guid=PyRSS2Gen.Guid(change['ad_id'], isPermaLink=False),
+                            pubDate=pub_date
+                        ))
+                    except Exception as e:
+                        self.logger.error(f"RSS item error: {e}")
 
-            cursor = conn.cursor()
-            # Fetch ads from the last N days (e.g., 7 days) or based on refresh interval for relevance
-            # Using a fixed period like 7 days might be more robust than relying on lastBuildDate
-            relevant_period_start = datetime.now(timezone.utc) - timedelta(days=7)
-
-            cursor.execute('''
-                SELECT ad_id, title, price, url, last_checked
-                FROM ad_changes
-                WHERE last_checked >= ?
-                ORDER BY last_checked DESC
-                LIMIT 100
-            ''', (relevant_period_start.isoformat(),)) # Limit number of items
-            changes = cursor.fetchall()
-            self.logger.debug(f"Fetched {len(changes)} ad changes from DB for RSS feed.")
-
-            for change in changes:
-                try:
-                    # Ensure last_checked is parsed correctly
-                    last_checked_dt_utc = parser.isoparse(change['last_checked'])
-                    # Convert to local time for pubDate
-                    pub_date_local = self.local_time(last_checked_dt_utc)
-
-                    new_item = PyRSS2Gen.RSSItem(
-                        title=f"{change['title']} - {change['price']}",
-                        link=change['url'],
-                        description=f"Price: {change['price']} | Title: {change['title']}", # Consistent description
-                        guid=PyRSS2Gen.Guid(change['ad_id'], isPermaLink=False),
-                        pubDate=pub_date_local
-                    )
-                    new_items.append(new_item)
-                except (ValueError, TypeError) as e:
-                    self.logger.error(f"Error processing ad change for RSS (ID: {change['ad_id']}): {e}. Skipping item.")
-                except Exception as item_err:
-                     self.logger.exception(f"Unexpected error creating RSS item for ad (ID: {change['ad_id']}): {item_err}. Skipping item.")
-
-
-            # Update the RSS feed object
-            self.rss_feed.items = new_items
-            self.rss_feed.lastBuildDate = datetime.now(timezone.utc) # Update last build date
-            self.logger.info(f"RSS feed updated with {len(new_items)} items from database.")
-
-        except sqlite3.DatabaseError as e:
-            self.logger.error(f"Database error generating RSS feed: {e}")
-            # Optionally keep old items on error: `return` instead of `self.rss_feed.items = []`
-            self.rss_feed.items = [] # Clear items on DB error to avoid stale data? Or keep old ones? Clearing for now.
+                self.rss_feed.items = new_items
+                self.rss_feed.lastBuildDate = datetime.now(timezone.utc)
         except Exception as e:
-            self.logger.exception(f"Unexpected error generating RSS feed: {e}")
-            self.rss_feed.items = [] # Clear items on unexpected error
-        finally:
-            if conn:
-                conn.close()
-                self.logger.debug("Database connection closed after RSS generation.")
+            self.logger.exception(f"RSS generation failed: {e}")
+            self.rss_feed.items = []
 
 
     def rss(self) -> Response:
@@ -790,6 +741,7 @@ class fbRssAdMonitor:
     def _setup_routes(self) -> None:
         """Sets up Flask routes."""
         self.app.add_url_rule('/rss', 'rss', self.rss)
+        self.app.add_url_rule('/health', 'health_check', self.health_check, methods=['GET'])
         self.app.add_url_rule('/edit', 'edit_config_page', self.edit_config_page, methods=['GET'])
         self.app.add_url_rule('/api/config', 'get_config_api', self.get_config_api, methods=['GET'])
         self.app.add_url_rule('/api/config', 'update_config_api', self.update_config_api, methods=['POST'])
@@ -802,7 +754,25 @@ class fbRssAdMonitor:
             return render_template('edit_config.html')
         except Exception as e:
             self.logger.error(f"Error rendering edit_config.html: {e}")
-            return "Error loading configuration page.", 500
+            return self._api_error("Error loading configuration page.", 500)
+
+    def health_check(self) -> Response:
+        """Simple health check endpoint."""
+        status = {
+            "status": "up",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "scheduler_running": self.scheduler.running if self.scheduler else False,
+            "database": os.path.basename(self.database)
+        }
+        return jsonify(status), 200
+
+    def _api_error(self, message: str, status_code: int = 400) -> Response:
+        """Returns a standardized JSON error response."""
+        return jsonify({
+            "status": "error",
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }), status_code
 
 
     def get_config_api(self) -> Response:
@@ -814,13 +784,13 @@ class fbRssAdMonitor:
                 return jsonify(current_config)
             except FileNotFoundError:
                 self.logger.error(f"Config file {self.config_file_path} not found for API.")
-                return jsonify({"detail": "Configuration file not found."}), 404
+                return self._api_error("Configuration file not found.", 404)
             except json.JSONDecodeError:
                 self.logger.error(f"Error decoding config file {self.config_file_path} for API.")
-                return jsonify({"detail": "Error reading configuration file."}), 500
+                return self._api_error("Error reading configuration file.", 500)
             except Exception as e:
                 self.logger.exception(f"Unexpected error in get_config_api: {e}")
-                return jsonify({"detail": "Internal server error."}), 500
+                return self._api_error("Internal server error.", 500)
 
 
     def _validate_config_data(self, data: Dict[str, Any]) -> Tuple[bool, str]:
@@ -972,7 +942,7 @@ class fbRssAdMonitor:
             is_valid, validation_msg = self._validate_config_data(new_data)
             if not is_valid:
                 self.logger.error(f"Invalid config data received: {validation_msg}")
-                return jsonify({"detail": f"Invalid configuration data: {validation_msg}"}), 400
+                return self._api_error(f"Invalid configuration data: {validation_msg}", 400)
 
             backup_path = self.config_file_path + ".bak"
             current_config_in_memory = {
@@ -1133,34 +1103,31 @@ class fbRssAdMonitor:
 
 
 def initialize_database(db_name: str, logger: logging.Logger) -> None:
-    """Initializes the SQLite database and creates the necessary table if it doesn't exist."""
-    conn = None
+    """Initializes the SQLite database."""
     try:
         logger.info(f"Initializing database: {db_name}")
-        conn = sqlite3.connect(db_name)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ad_changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                ad_id TEXT UNIQUE NOT NULL, -- Hash of the ad URL, must be unique
-                title TEXT NOT NULL,
-                price TEXT NOT NULL,
-                first_seen TEXT NOT NULL, -- ISO format datetime string (UTC)
-                last_checked TEXT NOT NULL -- ISO format datetime string (UTC)
-            )
-        ''')
-        # Optional: Add index for faster lookups
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ad_id ON ad_changes (ad_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_checked ON ad_changes (last_checked)')
-        conn.commit()
-        logger.info(f"Database '{db_name}' initialized successfully.")
-    except sqlite3.Error as e:
-        logger.error(f"Error initializing database {db_name}: {e}")
-        raise # Re-raise to prevent application start if DB init fails
-    finally:
-        if conn:
-            conn.close()
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ad_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL,
+                    ad_id TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    price TEXT NOT NULL,
+                    first_seen TEXT NOT NULL,
+                    last_checked TEXT NOT NULL
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_ad_id ON ad_changes (ad_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_checked ON ad_changes (last_checked)')
+            # Enable WAL mode for better concurrency
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
+            logger.info(f"Database '{db_name}' initialized.")
+    except Exception as e:
+        logger.error(f"DB Init Failed: {e}")
+        raise
 
 
 if __name__ == "__main__":

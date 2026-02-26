@@ -139,76 +139,81 @@ document.addEventListener('DOMContentLoaded', () => {
         const levelDiv = document.createElement('div');
         levelDiv.className = 'filter-level-block';
         levelDiv.dataset.filterIndex = filterIndex;
-        levelDiv.dataset.levelIndex = actualLevelIndex; // Store the intended level number
+        levelDiv.dataset.levelIndex = actualLevelIndex;
 
         const levelLabel = document.createElement('label');
-        levelLabel.textContent = `Level ${actualLevelIndex} Keywords:`;
+        levelLabel.textContent = `Level ${actualLevelIndex} Keywords (OR)`;
         levelDiv.appendChild(levelLabel);
 
         const keywordsContainer = document.createElement('div');
         keywordsContainer.className = 'keywords-container';
         levelDiv.appendChild(keywordsContainer);
 
-        if (keywords.length === 0) { // Add one empty keyword input if new level
+        if (keywords.length === 0) {
             keywords.push('');
         }
         keywords.forEach((keyword, keywordIndex) => {
             const keywordWrapper = document.createElement('div');
             keywordWrapper.className = 'keyword-wrapper';
             const keywordInput = createKeywordInput(keyword, actualLevelIndex, filterIndex, keywordIndex);
+
+            // Add input event for stylistic feedback
+            keywordInput.addEventListener('input', () => {
+                keywordInput.style.borderColor = keywordInput.value.trim() ? '' : 'rgba(255, 77, 77, 0.5)';
+            });
+
             keywordWrapper.appendChild(keywordInput);
-            if (keywords.length > 1 || keywordIndex > 0) { // Show remove button if more than one or not the first
-                 keywordWrapper.appendChild(createRemoveButton('Remove Keyword', () => { // Updated label
+            if (keywords.length > 1 || keywordIndex > 0) {
+                keywordWrapper.appendChild(createRemoveButton('×', () => {
                     keywordWrapper.remove();
-                    // Renumber levels if a level is removed (cascading) is handled by re-reading the form
                 }));
             }
             keywordsContainer.appendChild(keywordWrapper);
         });
 
 
-        levelDiv.appendChild(createAddButton('Add Keyword to Level ' + actualLevelIndex, () => {
+        const footer = document.createElement('div');
+        footer.style.display = 'flex';
+        footer.style.justifyContent = 'space-between';
+        footer.style.marginTop = '10px';
+
+        footer.appendChild(createAddButton('+ Keyword', () => {
             const keywordWrapper = document.createElement('div');
             keywordWrapper.className = 'keyword-wrapper';
-            const newKeywordIndex = keywordsContainer.querySelectorAll('.keyword-input').length;
-            const newKeywordInput = createKeywordInput('', actualLevelIndex, filterIndex, newKeywordIndex);
+            const newKeywordInput = createKeywordInput('', actualLevelIndex, filterIndex, 0);
             keywordWrapper.appendChild(newKeywordInput);
-            keywordWrapper.appendChild(createRemoveButton('Remove Keyword', () => keywordWrapper.remove())); // Updated label
+            keywordWrapper.appendChild(createRemoveButton('×', () => keywordWrapper.remove()));
             keywordsContainer.appendChild(keywordWrapper);
             newKeywordInput.focus();
         }));
 
-        levelDiv.appendChild(createRemoveButton('Remove Level', () => { // Updated label
+        footer.appendChild(createRemoveButton('Remove Level', () => {
             const parentFilterBlock = filterBlock.querySelector('.filter-levels-container');
             const isLevel1 = levelDiv.dataset.levelIndex === '1';
             const totalLevelsInBlock = parentFilterBlock.querySelectorAll('.filter-level-block').length;
 
             if (isLevel1 && totalLevelsInBlock === 1) {
-                // Special case: If it's Level 1 and the only level, clear its keywords but keep one empty input.
                 const currentKeywordsContainer = levelDiv.querySelector('.keywords-container');
-                currentKeywordsContainer.innerHTML = ''; // Clear all existing keyword wrappers
-
+                currentKeywordsContainer.innerHTML = '';
                 const keywordWrapper = document.createElement('div');
                 keywordWrapper.className = 'keyword-wrapper';
-                const newKeywordInput = createKeywordInput('', 1, filterIndex, 0); // Level 1, filterIndex, keywordIndex 0
+                const newKeywordInput = createKeywordInput('', 1, filterIndex, 0);
                 keywordWrapper.appendChild(newKeywordInput);
-                // No "Remove Keyword" button for the single remaining input in this case
                 currentKeywordsContainer.appendChild(keywordWrapper);
                 newKeywordInput.focus();
             } else {
-                // Default behavior: remove the level and re-number subsequent ones
                 levelDiv.remove();
                 const remainingLevels = parentFilterBlock.querySelectorAll('.filter-level-block');
                 remainingLevels.forEach((remLevel, idx) => {
                     const newLevelNum = idx + 1;
                     remLevel.dataset.levelIndex = newLevelNum;
-                    remLevel.querySelector('label').textContent = `Level ${newLevelNum} Keywords:`;
+                    remLevel.querySelector('label').textContent = `Level ${newLevelNum} Keywords (OR)`;
                     remLevel.querySelectorAll('.keyword-input').forEach(kwInput => kwInput.dataset.levelIndex = newLevelNum);
-                    const addKwBtn = remLevel.querySelector('.add-btn');
-                    if(addKwBtn) addKwBtn.textContent = 'Add Keyword to Level ' + newLevelNum;
                 });
             }
         }));
+
+        levelDiv.appendChild(footer);
         filterBlock.querySelector('.filter-levels-container').appendChild(levelDiv);
     }
 
@@ -224,9 +229,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const urlInput = document.createElement('input');
         urlInput.type = 'text';
         urlInput.className = 'url-input';
-        urlInput.value = url;
         urlInput.placeholder = 'https://www.facebook.com/marketplace/...';
         urlInput.required = true;
+
+        // Real-time validation
+        urlInput.addEventListener('input', () => {
+            try {
+                const val = urlInput.value.trim();
+                new URL(val);
+                if (val.includes('facebook.com/marketplace')) {
+                    urlInput.style.borderColor = 'var(--secondary-color)';
+                } else {
+                    urlInput.style.borderColor = 'orange';
+                }
+            } catch (e) {
+                urlInput.style.borderColor = 'var(--error-color)';
+            }
+        });
+
         block.appendChild(urlLabel);
         block.appendChild(urlInput);
 
@@ -279,8 +299,8 @@ document.addEventListener('DOMContentLoaded', () => {
             server_port: parseInt(serverPortInput.value, 10),
             currency: currencyInput.value.trim(),
             refresh_interval_minutes: refreshIntervalSelect.value === 'custom' ?
-                                      parseInt(refreshIntervalCustomInput.value, 10) :
-                                      parseInt(refreshIntervalSelect.value, 10),
+                parseInt(refreshIntervalCustomInput.value, 10) :
+                parseInt(refreshIntervalSelect.value, 10),
             url_filters: {}
         };
 
@@ -319,7 +339,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 new URL(url); // Validate URL format
                 if (!url.startsWith("https://www.facebook.com/marketplace/")) {
-                     // Soft warning, still allow, but good to note
+                    // Soft warning, still allow, but good to note
                     console.warn(`URL "${url}" does not look like a standard Facebook Marketplace URL.`);
                 }
             } catch (e) {
@@ -382,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 const oldUrlFilterKeys = new Set(initialUrlFilterKeys); // Keys before this successful save
                 currentConfig = formData; // Update global currentConfig with successfully saved data
-                
+
                 const newUrlFilterKeys = new Set(Object.keys(currentConfig.url_filters || {}));
                 let newlyAddedUrl = null;
                 for (const urlKey of newUrlFilterKeys) {
@@ -391,7 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         break;
                     }
                 }
-                
+
                 populateForm(currentConfig); // Re-populate form, which rebuilds DOM for filters
                 initialUrlFilterKeys = newUrlFilterKeys; // Update baseline for the next save operation
 
@@ -407,7 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         displayMessage(successMessageGlobal, result.message || 'Configuration saved successfully!', false, targetBlock);
                         targetBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     } else {
-                         // Fallback to global message if somehow the block isn't found (should not happen)
+                        // Fallback to global message if somehow the block isn't found (should not happen)
                         displayMessage(successMessageGlobal, result.message || 'Configuration saved successfully!', false);
                     }
                 } else {
