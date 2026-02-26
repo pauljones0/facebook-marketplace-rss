@@ -10,19 +10,20 @@
 
 ## System Requirements
 
-1.  **Python Environment**: Python 3.10 or higher.
-2.  **Browser**: Firefox (and GeckoDriver) must be installed for Selenium scraping.
-3.  **Memory**: Sufficient memory for running a headless Firefox instance (approx. 512MB-1GB recommended).
-4.  **Network**: Stable internet connection with access to Facebook.com.
-5.  **Storage**: Minimal storage for SQLite database and log files (typically <100MB).
+1.  **Rust Toolchain**: Latest Stable (1.88+).
+2.  **Browser**: Firefox must be installed for Selenium scraping.
+3.  **GeckoDriver**: The driver for Firefox must be in the PATH or manageable by the app.
+4.  **Memory**: Sufficient memory for running a headless Firefox instance (approx. 512MB-1GB recommended).
+5.  **Network**: Stable internet connection with access to Facebook.com.
+6.  **Storage**: Minimal storage for SQLite database and log files (typically <100MB).
 
 ## Dependencies
 
-*   `Flask`: Web server framework.
-*   `selenium`: Web automation for scraping.
-*   `beautifulsoup4`: HTML parsing.
-*   `APScheduler`: Task scheduling.
-*   `PyRSS2Gen`: RSS feed construction.
-*   `waitress`: Production WSGI server.
-*   `webdriver-manager`: Automated driver management.
-*   `sqlite3`: Included in Python standard library.
+*   `Axum`: Web server framework.
+*   `Tokio`: Asynchronous runtime.
+*   `thirtyfour`: Selenium WebDriver client.
+*   `scraper`: HTML parsing.
+*   `rusqlite`: SQLite database connector.
+*   `rss`: RSS feed generation.
+*   `tracing`: Structured logging and instrumentation.
+*   `serde`: Serialization and deserialization.

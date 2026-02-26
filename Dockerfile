@@ -1,5 +1,5 @@
 # --- Build Stage ---
-FROM rust:1.81-slim AS builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev sqlite3 libsqlite3-dev build-essential
@@ -42,6 +42,9 @@ COPY --from=builder /app/target/release/facebook-marketplace-rss /app/fb_ad_moni
 COPY static /app/static
 COPY templates /app/templates
 
+# Install curl for HEALTHCHECK (must be done as root before USER switch)
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user
 RUN useradd -m -s /bin/bash appuser && \
     chown -R appuser:appuser /app
@@ -51,8 +54,7 @@ USER appuser
 # Expose the server port
 EXPOSE 5000
 
-# Health check (requires curl)
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 

@@ -5,3 +5,4 @@ Dockerfile
 config.json
 fb-rss-feed.db
 docker-compose.yml
+target/

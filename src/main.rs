@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
 mod db;
@@ -25,7 +26,7 @@ async fn check_for_ads(state: Arc<AppState>, scraper: &mut Scraper) -> Result<()
 
         match scraper.get_page_content(url).await {
             Ok(content) => {
-                let ads = extract_ads(&content);
+                let ads = extract_ads(&content, &config.currency);
                 for (id, title, price, ad_url) in ads {
                     if apply_filters(&config.url_filters, url, &title) {
                         let entry = AdEntry {
@@ -61,10 +62,39 @@ async fn check_for_ads(state: Arc<AppState>, scraper: &mut Scraper) -> Result<()
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.json".to_string());
-    let config = Config::load(&config_path)?;
+
+    // Load config first to get log filename
+    let config = match Config::load(&config_path) {
+        Ok(c) => c,
+        Err(_) => {
+            // Fallback config for tracing init if file missing
+            Config {
+                server_ip: "0.0.0.0".to_string(),
+                server_port: 5000,
+                currency: "$".to_string(),
+                refresh_interval_minutes: 15,
+                log_filename: "fb-rssfeed.log".to_string(),
+                database_name: "fb-rss-feed.db".to_string(),
+                url_filters: std::collections::HashMap::new(),
+            }
+        }
+    };
+
+    // Initialize tracing with file rotation
+    let file_appender = tracing_appender::rolling::daily(".", &config.log_filename);
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .with(tracing_subscriber::fmt::layer()) // Console
+        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking)) // File
+        .init();
+
+    info!("Configuration loaded from {}", config_path);
     let db = Database::new(&config.database_name)?;
 
     let server_ip = config.server_ip.clone();
@@ -73,6 +103,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         config: RwLock::new(config.clone()),
         db,
+        start_time: std::time::Instant::now(),
     });
 
     // Start background task

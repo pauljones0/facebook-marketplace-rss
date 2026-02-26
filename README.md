@@ -23,7 +23,7 @@ The application uses Selenium (`thirtyfour`) with Firefox to browse and extract 
 ## Prerequisites
 
 ### Software & Tools
-*   **Rust Toolchain:** (e.g., Stable 1.81+).
+*   **Rust Toolchain:** (e.g., Stable 1.85+).
 *   **Cargo:** Rust's package manager and build tool.
 *   **Firefox Browser:** Required by Selenium for web scraping.
 *   **GeckoDriver:** WebDriver for Firefox.
@@ -175,11 +175,8 @@ Once the application is running:
     docker push bethekind/fb-mp-rss:latest
     ```
 
-## Logging
-
-*   Logs are written to the file specified by `log_filename` in `config.json` (e.g., `fb-rssfeed.log`).
-*   The log level can be set using the `LOG_LEVEL` environment variable (e.g., `INFO`, `DEBUG`). Default is `INFO`.
-*   Logs are rotated, with a maximum size of 10MB and 2 backup files.
+*   Logs are rotated daily, with a non-blocking appender for performance.
+*   Log files are named according to `log_filename` in `config.json`.
 
 ## Database
 

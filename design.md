@@ -29,7 +29,7 @@ The Facebook Marketplace RSS Monitor is a self-contained Rust application that c
 
 ## Technology Stack
 
-*   **Language**: Rust (edition 2021)
+*   **Language**: Rust (edition 2024, requires 1.85+)
 *   **Async Runtime**: Tokio
 *   **Web Framework**: Axum
 *   **Scraping**: Selenium (`thirtyfour`), `scraper`

@@ -7,6 +7,16 @@ pub struct Scraper {
     driver: Option<WebDriver>,
 }
 
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:130.0) Gecko/20100101 Firefox/130.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+];
+
 impl Scraper {
     pub fn new() -> Self {
         Scraper { driver: None }
@@ -18,8 +28,9 @@ impl Scraper {
         caps.add_arg("--no-sandbox")?;
         caps.add_arg("--disable-dev-shm-usage")?;
 
-        // Match Python's user agent randomization if possible, or use a stable one
-        caps.add_arg("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")?;
+        // Pick a random user agent
+        let ua = USER_AGENTS[rand::random_range(0..USER_AGENTS.len())];
+        caps.add_arg(&format!("--user-agent={}", ua))?;
 
         let driver = WebDriver::new("http://localhost:4444", caps).await?;
         self.driver = Some(driver);
@@ -60,7 +71,7 @@ impl Scraper {
     }
 }
 
-pub fn extract_ads(html_content: &str) -> Vec<(String, String, String, String)> {
+pub fn extract_ads(html_content: &str, currency: &str) -> Vec<(String, String, String, String)> {
     let document = Html::parse_document(html_content);
     let ad_link_selector = Selector::parse("a[href^='/marketplace/item/']").unwrap();
     let title_selector = Selector::parse("span[style*='-webkit-line-clamp']").unwrap();
@@ -91,8 +102,8 @@ pub fn extract_ads(html_content: &str) -> Vec<(String, String, String, String)> 
             .map(|el| el.text().collect::<String>().trim().to_string());
 
         if let (Some(t), Some(p)) = (title, price) {
-            // Validate price starts with currency or is free (similar to Python logic)
-            if p.starts_with('$') || p.to_lowercase().contains("free") {
+            // Validate price starts with configured currency symbol or is free
+            if p.starts_with(currency) || p.to_lowercase().contains("free") {
                 let id_hash = get_ad_hash(&full_url);
                 ads.push((id_hash, t, p, full_url));
             }
@@ -118,7 +129,7 @@ mod tests {
                 <span dir="auto">$800</span>
             </a>
         "#;
-        let ads = extract_ads(html);
+        let ads = extract_ads(html, "$");
         assert_eq!(ads.len(), 1);
         let (_hash, title, price, url) = &ads[0];
         assert_eq!(title, "Awesome iPhone 15");
@@ -129,7 +140,7 @@ mod tests {
     #[test]
     fn test_extract_ads_none() {
         let html = "<div>No ads here</div>";
-        let ads = extract_ads(html);
+        let ads = extract_ads(html, "$");
         assert_eq!(ads.len(), 0);
     }
 
@@ -147,7 +158,52 @@ mod tests {
                 </a>
             </div>
         "#;
-        let ads = extract_ads(html);
+        let ads = extract_ads(html, "$");
         assert_eq!(ads.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_ads_respects_currency() {
+        // Non-USD currency (€) should be accepted when configured
+        let html = r#"
+            <a href="/marketplace/item/999/?ref=search">
+                <span style="-webkit-line-clamp: 2;">Fancy Chair</span>
+                <span dir="auto">€150</span>
+            </a>
+        "#;
+        let ads = extract_ads(html, "€");
+        assert_eq!(ads.len(), 1);
+        assert_eq!(ads[0].2, "€150");
+
+        // The same ad should NOT appear when filtering for USD
+        let ads_usd = extract_ads(html, "$");
+        assert_eq!(ads_usd.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_ads_free_items_always_pass() {
+        // "Free" items pass regardless of currency
+        let html = r#"
+            <a href="/marketplace/item/777/?ref=search">
+                <span style="-webkit-line-clamp: 2;">Free Couch</span>
+                <span dir="auto">Free</span>
+            </a>
+        "#;
+        let ads = extract_ads(html, "$");
+        assert_eq!(ads.len(), 1);
+        assert_eq!(ads[0].1, "Free Couch");
+    }
+
+    #[test]
+    fn test_get_ad_hash_deterministic() {
+        let url = "https://facebook.com/marketplace/item/123456";
+        let h1 = get_ad_hash(url);
+        let h2 = get_ad_hash(url);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32); // MD5 hex is always 32 chars
+        assert_ne!(
+            get_ad_hash(url),
+            get_ad_hash("https://facebook.com/marketplace/item/999")
+        );
     }
 }

@@ -15,6 +15,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     pub config: RwLock<Config>,
     pub db: Database,
+    pub start_time: std::time::Instant,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
@@ -37,10 +38,12 @@ async fn edit_config_page() -> impl IntoResponse {
 
 async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let config = state.config.read().await;
+    let uptime_secs = state.start_time.elapsed().as_secs();
     let status = json!({
         "status": "up",
         "timestamp": Utc::now().to_rfc3339(),
         "database": config.database_name,
+        "uptime_secs": uptime_secs,
     });
     Json(status)
 }
@@ -100,8 +103,7 @@ mod tests {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    #[tokio::test]
-    async fn test_health_check() {
+    fn make_state() -> Arc<AppState> {
         let config = Config {
             server_ip: "127.0.0.1".to_string(),
             server_port: 5000,
@@ -112,11 +114,32 @@ mod tests {
             url_filters: std::collections::HashMap::new(),
         };
         let db = Database::new(":memory:").unwrap();
-        let state = Arc::new(AppState {
+        Arc::new(AppState {
             config: RwLock::new(config),
             db,
-        });
+            start_time: std::time::Instant::now(),
+        })
+    }
 
+    #[tokio::test]
+    async fn test_health_check() {
+        let state = make_state();
+        let app = app(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_health_check_fields() {
+        let state = make_state();
         let app = app(state);
         let response = app
             .oneshot(
@@ -129,5 +152,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "up");
+        assert!(json["timestamp"].is_string());
+        assert!(json["uptime_secs"].is_number());
+        assert!(json["database"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_rss_endpoint_returns_xml() {
+        let state = make_state();
+        let app = app(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/rss")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .expect("content-type header missing")
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("rss+xml"), "Expected rss+xml, got: {}", ct);
     }
 }

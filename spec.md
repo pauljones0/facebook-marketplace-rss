@@ -3,7 +3,7 @@
 ## Functional Specifications
 
 1.  **Search URL Monitoring**: The system shall monitor multiple Facebook Marketplace search URLs concurrently using a background loop with randomized jittered delays (2-10s) between requests.
-2.  **Health Monitoring**: The system shall provide a `/health` endpoint returning the application status, database connectivity, and uptime.
+2.  **Health Monitoring**: The system shall provide a `/health` endpoint returning the application status, timestamp, database name, and process uptime in seconds.
 3.  **Multi-Level Keywords**: The system shall support multi-level keyword filtering for each URL.
     *   **Level Logic**: Keywords within a level are OR-ed. Levels are AND-ed.
 4.  **RSS Generation**: The system shall provide an RSS 2.0 compliant feed at the `/rss` endpoint using the `rss` crate.
