@@ -279,4 +279,65 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
+    #[tokio::test]
+    #[ignore]
+    async fn test_e2e_live_marketplace() {
+        use crate::db::AdEntry;
+        use crate::rss_gen::generate_rss;
+        use chrono::Utc;
+
+        // 1. Initialize scraper
+        let mut scraper = Scraper::new();
+        scraper.init().await.expect("Failed to init scraper");
+
+        // 2. Fetch live FB marketplace URL
+        let url = "https://www.facebook.com/marketplace/category/search?query=chair&exact=false";
+        let html = scraper
+            .get_page_content(url)
+            .await
+            .expect("Failed to get page content");
+
+        // 3. Extract ads
+        let ads = extract_ads(&html, "$");
+
+        // Ensure we actually parsed some ads
+        assert!(!ads.is_empty(), "Failed to parse any ads from the live html. FB DOM might have changed or we got blocked.");
+
+        // 4. Convert to AdEntry
+        let now = Utc::now();
+        let mut entries = Vec::new();
+        for (idx, (hash, title, price, url)) in ads.into_iter().enumerate() {
+            // only take first 5 for the rss test
+            if idx >= 5 {
+                break;
+            }
+            entries.push(AdEntry {
+                ad_id: hash,
+                title,
+                price,
+                url,
+                first_seen: now,
+                last_checked: now,
+            });
+        }
+
+        // 5. Generate RSS
+        let rss_xml = generate_rss(&entries, "127.0.0.1", 5000).expect("Failed to generate RSS");
+
+        // Assert RSS looks valid
+        assert!(rss_xml.contains("<?xml"));
+        assert!(rss_xml.contains("<title>Facebook Marketplace Ad Feed</title>"));
+        for entry in &entries {
+            assert!(
+                rss_xml.contains(&entry.title),
+                "RSS missing title: {}",
+                entry.title
+            );
+            assert!(
+                rss_xml.contains(&entry.price),
+                "RSS missing price: {}",
+                entry.price
+            );
+        }
+    }
 }
