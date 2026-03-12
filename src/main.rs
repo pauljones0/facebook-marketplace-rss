@@ -98,7 +98,7 @@ async fn check_for_ads(state: Arc<AppState>) -> Result<()> {
 
                 let ads = extract_ads(&content, &config_clone.currency);
                 for (id, title, price, ad_url) in ads {
-                    if apply_filters(&config_clone.url_filters, &url, &title) {
+                    if apply_filters(&config_clone.processed_url_filters, &url, &title) {
                         let entry = AdEntry {
                             ad_id: id,
                             title,
@@ -153,6 +153,7 @@ async fn main() -> Result<()> {
                 log_filename: "fb-rssfeed.log".to_string(),
                 database_name: "fb-rss-feed.db".to_string(),
                 url_filters: std::collections::HashMap::new(),
+                processed_url_filters: std::collections::HashMap::new(),
             }
         }
     };
@@ -239,6 +240,7 @@ mod e2e_tests {
             log_filename: "test.log".to_string(),
             database_name: db_path,
             url_filters: std::collections::HashMap::new(),
+            processed_url_filters: std::collections::HashMap::new(),
         };
 
         let db = Database::new(&config.database_name).unwrap();

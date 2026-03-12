@@ -103,6 +103,9 @@ async fn update_config(
             .into_response();
     }
 
+    let mut new_config = new_config;
+    new_config.refresh_processed_filters();
+
     // Update shared state
     let mut config = state.config.write().await;
     *config = new_config;
@@ -130,6 +133,7 @@ mod tests {
             log_filename: "test.log".to_string(),
             database_name: ":memory:".to_string(),
             url_filters: std::collections::HashMap::new(),
+            processed_url_filters: std::collections::HashMap::new(),
         };
         let db = Database::new(":memory:").unwrap();
         Arc::new(AppState {
@@ -218,6 +222,7 @@ mod tests {
             log_filename: "test.log".to_string(),
             database_name: "test.db".to_string(),
             url_filters: std::collections::HashMap::new(),
+            processed_url_filters: std::collections::HashMap::new(),
         };
 
         // Invalid config
