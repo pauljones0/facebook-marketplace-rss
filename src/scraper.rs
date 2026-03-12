@@ -123,9 +123,11 @@ impl Drop for Scraper {
 
 pub fn extract_ads(html_content: &str, currency: &str) -> Vec<(String, String, String, String)> {
     let document = Html::parse_document(html_content);
-    let ad_link_selector = Selector::parse("a[href^='/marketplace/item/']").unwrap();
-    let title_selector = Selector::parse("span[style*='-webkit-line-clamp']").unwrap();
-    let price_selector = Selector::parse("span[dir='auto']").unwrap();
+    let ad_link_selector =
+        Selector::parse("a[href^='/marketplace/item/']").expect("Invalid ad link selector");
+    let title_selector =
+        Selector::parse("span[style*='-webkit-line-clamp']").expect("Invalid title selector");
+    let price_selector = Selector::parse("span[dir='auto']").expect("Invalid price selector");
 
     let mut ads = Vec::new();
     let mut processed_urls = std::collections::HashSet::new();
