@@ -13,13 +13,40 @@ pub struct Config {
     pub log_filename: String,
     pub database_name: String,
     pub url_filters: HashMap<String, HashMap<String, Vec<String>>>,
+    #[serde(skip, default)]
+    pub processed_url_filters: HashMap<String, Vec<Vec<String>>>,
 }
 
 impl Config {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_json::from_str(&content)?;
+        let mut config: Config = serde_json::from_str(&content)?;
+        config.refresh_processed_filters();
         Ok(config)
+    }
+
+    pub fn refresh_processed_filters(&mut self) {
+        let mut processed = HashMap::new();
+        for (url, filters) in &self.url_filters {
+            let mut levels: Vec<_> = filters
+                .keys()
+                .filter(|k| k.starts_with("level") && k[5..].chars().all(|c| c.is_ascii_digit()))
+                .collect();
+            levels.sort_by_key(|k| k[5..].parse::<u32>().unwrap_or(0));
+
+            let mut processed_levels = Vec::new();
+            for level in levels {
+                if let Some(keywords) = filters.get(level) {
+                    if !keywords.is_empty() {
+                        let lower_keywords: Vec<String> =
+                            keywords.iter().map(|k| k.to_lowercase()).collect();
+                        processed_levels.push(lower_keywords);
+                    }
+                }
+            }
+            processed.insert(url.clone(), processed_levels);
+        }
+        self.processed_url_filters = processed;
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -102,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_save_config() {
-        let config = Config {
+        let mut config = Config {
             server_ip: "127.0.0.1".to_string(),
             server_port: 5000,
             currency: "$".to_string(),
@@ -110,7 +137,9 @@ mod tests {
             log_filename: "test.log".to_string(),
             database_name: "test.db".to_string(),
             url_filters: HashMap::new(),
+            processed_url_filters: HashMap::new(),
         };
+        config.refresh_processed_filters();
 
         let tmpfile = NamedTempFile::new().unwrap();
         config.save(tmpfile.path()).unwrap();
@@ -129,6 +158,7 @@ mod tests {
             log_filename: "test.log".to_string(),
             database_name: "test.db".to_string(),
             url_filters: HashMap::new(),
+            processed_url_filters: HashMap::new(),
         };
 
         assert!(config.validate().is_ok());
@@ -165,5 +195,40 @@ mod tests {
         );
         config.url_filters = valid_url_filters_with_valid_levels;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_refresh_processed_filters() {
+        let mut config = Config {
+            server_ip: "127.0.0.1".to_string(),
+            server_port: 5000,
+            currency: "$".to_string(),
+            refresh_interval_minutes: 15,
+            log_filename: "test.log".to_string(),
+            database_name: "test.db".to_string(),
+            url_filters: HashMap::new(),
+            processed_url_filters: HashMap::new(),
+        };
+
+        let mut filters = HashMap::new();
+        filters.insert("level2".to_string(), vec!["PRO".to_string()]);
+        filters.insert("level1".to_string(), vec!["iPhone".to_string(), "Samsung".to_string()]);
+        filters.insert("levelX".to_string(), vec!["Invalid".to_string()]);
+        filters.insert("level3".to_string(), vec![]); // Empty level
+
+        config.url_filters.insert("https://example.com".to_string(), filters);
+
+        config.refresh_processed_filters();
+
+        let processed = config.processed_url_filters.get("https://example.com").unwrap();
+
+        // Should have 2 levels (level1 and level2), sorted
+        assert_eq!(processed.len(), 2);
+
+        // level1
+        assert_eq!(processed[0], vec!["iphone".to_string(), "samsung".to_string()]);
+
+        // level2
+        assert_eq!(processed[1], vec!["pro".to_string()]);
     }
 }
