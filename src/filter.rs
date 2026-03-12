@@ -162,4 +162,18 @@ mod tests {
             "New i-Phone 15+ for sale"
         ));
     }
+
+    #[test]
+    fn test_apply_filters_url_not_found_non_empty_map() {
+        let mut inner = HashMap::new();
+        inner.insert("level1".to_string(), vec!["apple".to_string()]);
+        let mut filters = HashMap::new();
+        filters.insert("https://example.com".to_string(), inner);
+
+        assert!(apply_filters(
+            &filters,
+            "https://other.com",
+            "Apple Ad"
+        ));
+    }
 }
