@@ -15,6 +15,7 @@ thirtyfour = "0.33"
 rss = "2.0"
 scraper = "0.19"
 tracing = "0.1"
+base64 = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"

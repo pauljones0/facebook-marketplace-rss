@@ -1,13 +1,16 @@
 use crate::config::Config;
 use crate::db::Database;
+use axum::http::{header, StatusCode};
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use chrono::Utc;
 use serde_json::json;
+use base64::Engine;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
@@ -17,16 +20,68 @@ pub struct AppState {
     pub db: Database,
     pub start_time: std::time::Instant,
     pub config_path: String,
+    pub admin_password: String,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
+    let protected_routes = Router::new()
+        .route("/edit", get(edit_config_page))
+        .route("/api/config", get(get_config).post(update_config))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
     Router::new()
         .route("/health", get(health_check))
         .route("/rss", get(rss_feed))
-        .route("/edit", get(edit_config_page))
-        .route("/api/config", get(get_config).post(update_config))
+        .merge(protected_routes)
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state)
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, impl IntoResponse> {
+    let auth_header = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok());
+
+    let authorized = if let Some(auth) = auth_header {
+        if let Some(stripped) = auth.strip_prefix("Basic ") {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(stripped.as_bytes()) {
+                if let Ok(auth_str) = String::from_utf8(decoded) {
+                    let parts: Vec<&str> = auth_str.splitn(2, ':').collect();
+                    if parts.len() == 2 && parts[0] == "admin" && parts[1] == state.admin_password {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if authorized {
+        Ok(next.run(req).await)
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"Admin\"")],
+            "Unauthorized",
+        ))
+    }
 }
 
 async fn edit_config_page() -> impl IntoResponse {
@@ -141,6 +196,7 @@ mod tests {
             db,
             start_time: std::time::Instant::now(),
             config_path: "dummy_config.json".to_string(),
+            admin_password: "admin".to_string(),
         })
     }
 
@@ -227,6 +283,7 @@ mod tests {
 
         // Invalid config
         config.server_port = 0;
+        let auth = "Basic YWRtaW46YWRtaW4=";
         let response = app
             .clone()
             .oneshot(
@@ -234,6 +291,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/config")
                     .header("content-type", "application/json")
+                    .header("authorization", auth)
                     .body(Body::from(serde_json::to_string(&config).unwrap()))
                     .unwrap(),
             )
@@ -254,6 +312,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/config")
                     .header("content-type", "application/json")
+                    .header("authorization", auth)
                     .body(Body::from(serde_json::to_string(&config).unwrap()))
                     .unwrap(),
             )
@@ -266,5 +325,85 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["message"].is_string());
         assert_eq!(state.config.read().await.server_port, 8080);
+    }
+
+    #[tokio::test]
+    async fn test_protected_routes_unauthorized() {
+        let state = make_state();
+        let app = app(state);
+
+        let routes = vec!["/edit", "/api/config"];
+        for route in routes {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(route)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                response.headers().get("www-authenticate").unwrap(),
+                "Basic realm=\"Admin\""
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_protected_routes_authorized() {
+        let state = make_state();
+        let app = app(state);
+
+        // "admin:admin" in base64 is "YWRtaW46YWRtaW4="
+        let auth = "Basic YWRtaW46YWRtaW4=";
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/edit")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/config")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_protected_routes_wrong_password() {
+        let state = make_state();
+        let app = app(state);
+
+        // "admin:wrong" in base64 is "YWRtaW46d3Jvbmc="
+        let auth = "Basic YWRtaW46d3Jvbmc=";
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/config")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

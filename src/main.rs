@@ -177,11 +177,17 @@ async fn main() -> Result<()> {
     let server_ip = config.server_ip.clone();
     let server_port = config.server_port;
 
+    let admin_password = std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| {
+        warn!("ADMIN_PASSWORD not set, using default 'admin'");
+        "admin".to_string()
+    });
+
     let state = Arc::new(AppState {
         config: RwLock::new(config.clone()),
         db,
         start_time: std::time::Instant::now(),
         config_path: config_path.clone(),
+        admin_password,
     });
 
     // Start background task
@@ -252,6 +258,7 @@ mod e2e_tests {
             db,
             start_time: std::time::Instant::now(),
             config_path,
+            admin_password: "admin".to_string(),
         });
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -278,9 +285,18 @@ mod e2e_tests {
         let health_json: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(health_json["status"], "up");
 
-        // Test get config
+        // Test get config (unauthorized)
         let resp = client
             .get(format!("{}/api/config", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+
+        // Test get config (authorized)
+        let resp = client
+            .get(format!("{}/api/config", base_url))
+            .basic_auth("admin", Some("admin"))
             .send()
             .await
             .unwrap();
@@ -293,6 +309,7 @@ mod e2e_tests {
         new_config.server_port = 0;
         let resp = client
             .post(format!("{}/api/config", base_url))
+            .basic_auth("admin", Some("admin"))
             .json(&new_config)
             .send()
             .await
@@ -303,6 +320,7 @@ mod e2e_tests {
         new_config.server_port = 9000;
         let resp = client
             .post(format!("{}/api/config", base_url))
+            .basic_auth("admin", Some("admin"))
             .json(&new_config)
             .send()
             .await
